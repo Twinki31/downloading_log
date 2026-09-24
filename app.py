@@ -6,8 +6,9 @@ import streamlit as st
 from app_state import (MAX_RULES, default_state, load_state, new_rule,
                        normalise_state, remove_rule, save_state, state_path)
 from fields import FIELDS, label
-from filtering import OPERATORS, Rule, filter_log
+from filtering import OPERATORS, Rule
 from download import download_log
+from operations import process_local_log, process_s3_log
 
 st.set_page_config(page_title="Логи AdFox", page_icon="📄", layout="wide")
 st.title("Логи AdFox")
@@ -19,7 +20,7 @@ STATE_FILE = state_path()
 
 def clear_setting_widgets():
     prefixes = ("rule_field_", "rule_op_", "rule_text_", "delete_rule_")
-    names = {"endpoint", "bucket", "prefix", "profile", "proxy", "folder", "mode",
+    names = {"endpoint", "bucket", "prefix", "profile", "proxy", "keep_raw", "folder", "mode",
              "local_path", "selected_date", "hour", "output_name", "replace"}
     for key in list(st.session_state):
         if key in names or key.startswith(prefixes):
@@ -58,6 +59,15 @@ with st.sidebar:
 
 mode_options = ["Скачать из S3", "Локальный файл"]
 mode = st.radio("Источник", mode_options, index=mode_options.index(settings["mode"]), horizontal=True, key="mode")
+keep_raw = st.checkbox(
+    "Оставить сырой лог", settings["keep_raw"], key="keep_raw",
+    disabled=mode != "Скачать из S3",
+    help="Относится только к архивам .tsv.gz, скачанным приложением из S3.",
+)
+if mode == "Скачать из S3":
+    st.caption("Если выключить флажок, новый архив удалится только после успешного сохранения итогового TSV.")
+else:
+    st.caption("Локальный исходный файл никогда не изменяется и не удаляется.")
 if mode == "Скачать из S3":
     left, right = st.columns(2)
     selected_date = left.date_input("Дата в имени файла", date.fromisoformat(settings["selected_date"]), key="selected_date")
@@ -88,7 +98,7 @@ output_name = st.text_input("Имя результата", settings["output_name
 replace = st.checkbox("Разрешить замену существующих файлов с теми же именами", key="replace")
 export = dict(
     schema_version=settings["schema_version"], endpoint=endpoint, bucket=bucket,
-    prefix=prefix, profile=profile, proxy=proxy, folder=folder, mode=mode,
+    prefix=prefix, profile=profile, proxy=proxy, keep_raw=keep_raw, folder=folder, mode=mode,
     local_path=st.session_state.get("local_path", settings["local_path"]),
     output_name=output_name,
     selected_date=st.session_state.get("selected_date", date.fromisoformat(settings["selected_date"])).isoformat(),
@@ -114,6 +124,7 @@ st.download_button("Сохранить настройки", json.dumps(export, e
 
 if st.button("Скачать и отфильтровать" if mode == "Скачать из S3" else "Отфильтровать", type="primary"):
     st.session_state.pop("result", None)
+    archive = None
     try:
         if not folder.strip(): raise ValueError("Укажите папку результатов")
         if not output_name.endswith(".tsv") or Path(output_name).name != output_name:
@@ -133,20 +144,40 @@ if st.button("Скачать и отфильтровать" if mode == "Скач
             def downloaded(size):
                 total[0] += size
                 status.info(f"Скачано: {total[0] / 1024**2:.1f} МБ")
-            source = download_log(selected_date, hour, folder, endpoint, bucket, prefix, profile, proxy, downloaded)
+            def download():
+                return download_log(selected_date, hour, folder, endpoint, bucket, prefix, profile, proxy, downloaded)
+
+            status.info("Скачивание…")
+            result, archive_removed, existed_before = process_s3_log(
+                archive, destination, rules, keep_raw, download,
+                lambda n, m: status.info(f"Обработано: {n:,}. Найдено: {m:,}"),
+            )
+            if archive_removed:
+                archive_note = "Скачанный архив удалён после успешного сохранения итогового TSV."
+            elif existed_before and not keep_raw:
+                archive_note = "Архив не удалён: он существовал до начала этой операции."
+            else:
+                archive_note = f"Сырой архив сохранён: {archive.resolve()}"
         else:
             if not local_path.strip(): raise ValueError("Укажите путь к логу")
             source = Path(local_path).expanduser()
-        status.info("Фильтрация…")
-        result = filter_log(source, destination, rules, lambda n, m: status.info(f"Обработано: {n:,}. Найдено: {m:,}"))
+            status.info("Фильтрация…")
+            result = process_local_log(
+                source, destination, rules,
+                lambda n, m: status.info(f"Обработано: {n:,}. Найдено: {m:,}"),
+            )
+            archive_note = "Локальный исходный файл оставлен без изменений."
         status.empty()
-        st.session_state.result = (str(destination.resolve()), result)
+        st.session_state.result = (str(destination.resolve()), result, archive_note)
     except Exception as error:
         st.error(f"Операция не завершена ({type(error).__name__}): {error}")
-        st.caption("Проверьте путь, AWS-профиль и доступ к S3. Итоговый файл заменяется только после успешной обработки.")
+        if archive is not None and archive.exists():
+            st.warning(f"Архив оставлен для диагностики или повторной обработки: {archive.resolve()}")
+        st.caption("Проверьте путь, AWS-профиль и доступ к S3. Временные .part удаляются, а итоговый файл заменяется только после успешной обработки.")
 if "result" in st.session_state:
-    path, result = st.session_state.result
+    path, result, archive_note = st.session_state.result
     st.success(f"Готово: {path}")
+    st.caption(archive_note)
     a, b, c = st.columns(3)
     a.metric("Обработано строк", result["checked"])
     b.metric("Найдено", result["matched"])

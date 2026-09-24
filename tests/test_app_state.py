@@ -61,6 +61,20 @@ class StateTests(unittest.TestCase):
         self.assertNotIn("unknown", state)
         self.assertIsNone(warning)
 
+    def test_old_settings_without_keep_raw_use_safe_default(self):
+        raw = {"folder": "/tmp/result"}
+        state, warning = normalise_state(raw, self.defaults, FIELDS, OPERATORS)
+        self.assertTrue(state["keep_raw"])
+        self.assertIsNone(warning)
+
+    def test_keep_raw_is_saved_and_restored(self):
+        state = default_state()
+        state["keep_raw"] = False
+        save_state(self.path, state)
+        loaded, warning = self.load()
+        self.assertFalse(loaded["keep_raw"])
+        self.assertIsNone(warning)
+
     def test_newer_file_recovers_known_fields_with_warning(self):
         raw = {"schema_version": 999, "folder": "/known", "future": True}
         self.path.parent.mkdir(parents=True)

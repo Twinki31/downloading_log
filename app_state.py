@@ -26,6 +26,7 @@ def default_state():
         "prefix": "imho-video",
         "profile": "",
         "proxy": False,
+        "keep_raw": True,
         "folder": str(Path.home() / "Downloads" / "adfox_logs"),
         "mode": "Скачать из S3",
         "local_path": "",
@@ -102,6 +103,13 @@ def normalise_state(raw, defaults, fields, operators, recover=False):
             warnings.append("поле proxy пропущено")
         else:
             raise ValueError("Некорректная настройка proxy")
+    if "keep_raw" in raw:
+        if isinstance(raw["keep_raw"], bool):
+            result["keep_raw"] = raw["keep_raw"]
+        elif recover:
+            warnings.append("поле keep_raw пропущено")
+        else:
+            raise ValueError("Некорректная настройка keep_raw")
     if "mode" in raw:
         if raw["mode"] in ("Скачать из S3", "Локальный файл"):
             result["mode"] = raw["mode"]

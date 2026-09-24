@@ -47,6 +47,22 @@ class AppUiTests(unittest.TestCase):
         restarted = self.open_app()
         self.assertFalse(restarted.checkbox(key="replace").value)
 
+    def test_keep_raw_persists_and_is_disabled_for_local_source(self):
+        app = self.open_app()
+        keep_raw = app.checkbox(key="keep_raw")
+        self.assertTrue(keep_raw.value)
+        self.assertFalse(keep_raw.disabled)
+        keep_raw.set_value(False).run()
+
+        restarted = self.open_app()
+        self.assertFalse(restarted.checkbox(key="keep_raw").value)
+        restarted.radio(key="mode").set_value("Локальный файл").run()
+        self.assertTrue(restarted.checkbox(key="keep_raw").disabled)
+        self.assertTrue(any(
+            "Локальный исходный файл никогда не изменяется" in item.value
+            for item in restarted.caption
+        ))
+
     def test_local_filtering_from_ui(self):
         source = Path(self.tmp.name) / "source.tsv"
         source.write_text(
