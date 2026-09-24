@@ -98,6 +98,20 @@ class OperationStateTests(unittest.TestCase):
         self.assertEqual(snapshot.error, "OSError: network failed")
         self.assertFalse(snapshot.active)
 
+    def test_failure_redacts_credentials_from_error_text(self):
+        self.state.begin_download(None)
+        self.state.fail(RuntimeError(
+            "aws_secret_" "access_key=do-not-show "
+            "https://login:password@example.test "
+            "AKIA" "1234567890ABCDEF"
+        ))
+        message = self.state.snapshot().error
+        self.assertNotIn("do-not-show", message)
+        self.assertNotIn("login", message)
+        self.assertNotIn("password@example", message)
+        self.assertNotIn("AKIA" "1234567890ABCDEF", message)
+        self.assertEqual(message.count("<скрыто>"), 3)
+
 
 class OperationControllerTests(unittest.TestCase):
     def test_second_start_is_rejected_and_success_unlocks(self):

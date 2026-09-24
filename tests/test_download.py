@@ -217,6 +217,21 @@ class DownloadTests(unittest.TestCase):
             self.assertFalse(list(root.glob("*.part")))
             self.assertTrue(client.closed)
 
+    def test_replace_error_preserves_old_archive_and_removes_temporary(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive = root / "2026_09_24_12.tsv.gz"
+            archive.write_bytes(b"previous archive")
+            client = RangeClient(b"new archive")
+
+            with patch("download.os.replace", side_effect=OSError("disk error")):
+                with self.assertRaisesRegex(OSError, "disk error"):
+                    self.run_download(root, client)
+
+            self.assertEqual(archive.read_bytes(), b"previous archive")
+            self.assertFalse(list(root.glob("*.part")))
+            self.assertTrue(client.closed)
+
 
 if __name__ == "__main__":
     unittest.main()

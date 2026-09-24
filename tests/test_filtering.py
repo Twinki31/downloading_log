@@ -2,6 +2,7 @@ import gzip
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 from filtering import Rule, filter_log
 from operation_state import OperationCancelled
 
@@ -59,5 +60,17 @@ class Tests(unittest.TestCase):
                 [Rule('banner_id', 'Одно из значений', ('208684',))],
                 checkpoint=checkpoint,
             )
+        self.assertEqual(self.target.read_text(encoding='utf-8'), 'old result')
+        self.assertFalse(list(self.root.glob('*.part')))
+
+    def test_replace_error_preserves_old_result_and_removes_temporary(self):
+        self.write('banner_id\n208684\n')
+        self.target.write_text('old result', encoding='utf-8')
+        with patch('filtering.os.replace', side_effect=OSError('disk error')):
+            with self.assertRaisesRegex(OSError, 'disk error'):
+                filter_log(
+                    self.source, self.target,
+                    [Rule('banner_id', 'Одно из значений', ('208684',))],
+                )
         self.assertEqual(self.target.read_text(encoding='utf-8'), 'old result')
         self.assertFalse(list(self.root.glob('*.part')))

@@ -1,6 +1,7 @@
 """Потокобезопасное состояние одной длительной операции."""
 
 from dataclasses import dataclass, replace
+import re
 from threading import Condition, Lock, Thread
 import time
 from typing import Any, Callable
@@ -9,6 +10,24 @@ from typing import Any, Callable
 ACTIVE_STATUSES = frozenset({
     "preparing", "downloading", "pausing", "paused", "filtering", "cancelling",
 })
+
+_SENSITIVE_ERROR_PATTERNS = (
+    re.compile(
+        r"(?i)(aws_access_key_id|aws_secret_access_key|aws_session_token|"
+        r"access[_-]?token|secret[_-]?key|password)\s*([:=])\s*([^\s,;]+)"
+    ),
+    re.compile(r"(?i)(https?://)([^/@\s:]+):([^/@\s]+)@"),
+    re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
+)
+
+
+def safe_error_text(error):
+    """Вернуть полезное сообщение без распространённых форматов секретов."""
+    text = str(error)
+    text = _SENSITIVE_ERROR_PATTERNS[0].sub(r"\1\2<скрыто>", text)
+    text = _SENSITIVE_ERROR_PATTERNS[1].sub(r"\1<скрыто>@", text)
+    text = _SENSITIVE_ERROR_PATTERNS[2].sub("<скрыто>", text)
+    return f"{type(error).__name__}: {text}"
 
 
 class OperationCancelled(Exception):
@@ -210,7 +229,7 @@ class OperationState:
             self._transition("failed")
             self._snapshot = replace(
                 self._snapshot,
-                error=f"{type(error).__name__}: {error}",
+                error=safe_error_text(error),
                 result=None,
             )
             self._condition.notify_all()
