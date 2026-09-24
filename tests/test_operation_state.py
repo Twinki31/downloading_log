@@ -1,4 +1,5 @@
 import threading
+import time
 import unittest
 
 from operation_state import OperationController, OperationState
@@ -54,6 +55,30 @@ class OperationStateTests(unittest.TestCase):
         self.state.begin_filtering()
         self.assertEqual(self.state.snapshot().speed_bytes_per_second, 2000.0)
 
+    def test_pause_time_is_excluded_from_speed(self):
+        self.state.begin_download(200)
+        self.clock.value = 1.0
+        self.state.add_downloaded(100)
+        self.assertTrue(self.state.request_pause())
+
+        waiting = threading.Thread(target=self.state.wait_download_permission)
+        waiting.start()
+        for _ in range(100):
+            if self.state.snapshot().status == "paused":
+                break
+            time.sleep(0.001)
+        self.assertEqual(self.state.snapshot().status, "paused")
+        paused_bytes = self.state.snapshot().downloaded_bytes
+        self.clock.value = 101.0
+        self.assertTrue(self.state.resume())
+        waiting.join(1)
+
+        self.clock.value = 102.0
+        self.state.add_downloaded(100)
+        self.state.begin_filtering()
+        self.assertEqual(self.state.snapshot().downloaded_bytes, paused_bytes + 100)
+        self.assertEqual(self.state.snapshot().speed_bytes_per_second, 100.0)
+
     def test_successful_state_transitions(self):
         self.state.begin_download(10)
         self.state.add_downloaded(10)
@@ -104,6 +129,37 @@ class OperationControllerTests(unittest.TestCase):
         self.assertEqual(controller.snapshot().status, "failed")
         self.assertTrue(controller.start(lambda state: "recovered"))
         controller.wait(2)
+        self.assertEqual(controller.snapshot().status, "completed")
+
+    def test_cancel_on_pause_is_idempotent_and_next_start_works(self):
+        controller = OperationController()
+        reach_checkpoint = threading.Event()
+        continue_to_checkpoint = threading.Event()
+
+        def operation(state):
+            state.begin_download(10)
+            reach_checkpoint.set()
+            continue_to_checkpoint.wait(1)
+            state.wait_download_permission()
+            return "not reached"
+
+        self.assertTrue(controller.start(operation))
+        self.assertTrue(reach_checkpoint.wait(1))
+        self.assertTrue(controller.pause())
+        continue_to_checkpoint.set()
+        for _ in range(100):
+            if controller.snapshot().status == "paused":
+                break
+            time.sleep(0.001)
+        self.assertEqual(controller.snapshot().status, "paused")
+        self.assertTrue(controller.cancel())
+        self.assertFalse(controller.cancel())
+        controller.wait(1)
+        self.assertEqual(controller.snapshot().status, "cancelled")
+        self.assertEqual(controller.snapshot().downloaded_bytes, 0)
+
+        self.assertTrue(controller.start(lambda _state: "again"))
+        controller.wait(1)
         self.assertEqual(controller.snapshot().status, "completed")
 
 

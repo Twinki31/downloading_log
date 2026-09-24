@@ -15,13 +15,14 @@ def run_s3_operation(state, *, selected_date, hour, folder, endpoint, bucket,
         source = downloader(
             selected_date, hour, folder, endpoint, bucket, prefix, profile, proxy,
             progress=state.add_downloaded, metadata=state.begin_download,
+            control=state,
         )
         state.begin_filtering()
         return source
 
     result, archive_removed, existed_before = process_s3_log(
         archive, destination, rules, keep_raw, download,
-        state.update_filtering,
+        state.update_filtering, state.check_cancelled,
     )
     if archive_removed:
         archive_note = "Скачанный архив удалён после успешного сохранения итогового TSV."
@@ -40,7 +41,9 @@ def run_s3_operation(state, *, selected_date, hour, folder, endpoint, bucket,
 def run_local_operation(state, *, source, destination, rules):
     """Отфильтровать локальный файл в том же worker."""
     state.begin_filtering()
-    result = process_local_log(source, destination, rules, state.update_filtering)
+    result = process_local_log(
+        source, destination, rules, state.update_filtering, state.check_cancelled,
+    )
     return {
         "path": str(Path(destination).resolve()),
         "filter_result": result,

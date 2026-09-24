@@ -22,7 +22,7 @@ class Rule:
         if self.operator == "Не пусто": return value != ""
         raise ValueError("Неизвестное условие")
 
-def filter_log(source, destination, rules, progress=None):
+def filter_log(source, destination, rules, progress=None, checkpoint=None):
     source, destination = Path(source).expanduser(), Path(destination).expanduser()
     if source.resolve() == destination.resolve():
         raise ValueError("Исходный и итоговый файлы должны различаться")
@@ -54,6 +54,8 @@ def filter_log(source, destination, rules, progress=None):
                 temporary = Path(outgoing.name)
                 outgoing.write(first)
                 for line in incoming:
+                    if checkpoint:
+                        checkpoint()
                     checked += 1
                     cells = line.rstrip("\r\n").split("\t")
                     if len(cells) != len(headers):
@@ -65,6 +67,8 @@ def filter_log(source, destination, rules, progress=None):
                             preview.append(dict(zip(headers, cells)))
                     if progress and checked % 100000 == 0:
                         progress(checked, matched)
+                if checkpoint:
+                    checkpoint()
             os.replace(temporary, destination)
             temporary = None
     finally:

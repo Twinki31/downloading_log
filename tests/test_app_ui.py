@@ -26,6 +26,10 @@ class AppUiTests(unittest.TestCase):
         self.assertFalse(list(app.exception))
         return app
 
+    @staticmethod
+    def button(app, label):
+        return next(button for button in app.button if button.label == label)
+
     def test_delete_middle_keeps_values_and_persists_after_restart(self):
         app = self.open_app()
         app.text_area[0].set_value("первый\nA").run()
@@ -144,6 +148,86 @@ class AppUiTests(unittest.TestCase):
                      if button.label == "Скачать и отфильтровать")
         self.assertFalse(start.disabled)
         self.assertTrue(any("OSError: test failure" in item.value for item in app.error))
+
+    def test_pause_cancel_confirmation_back_and_confirm(self):
+        marker = Path(self.tmp.name) / "existing.tsv"
+        marker.write_text("keep", encoding="utf-8")
+        app = self.open_app()
+        controller = app.session_state["operation_controller"]
+        ready = threading.Event()
+        finish = threading.Event()
+
+        def operation(state):
+            state.begin_download(100)
+            ready.set()
+            while not finish.is_set():
+                state.wait_download_permission()
+                state.check_cancelled()
+                time.sleep(0.001)
+            state.begin_filtering()
+            return {
+                "path": str(marker),
+                "filter_result": {"checked": 0, "matched": 0, "malformed": 0,
+                                  "preview": []},
+                "archive_note": "Тест завершён.", "archive": None,
+            }
+
+        self.assertTrue(controller.start(operation))
+        self.assertTrue(ready.wait(1))
+        app.run()
+        self.assertEqual(self.button(app, "Пауза").key, "pause_resume")
+        self.button(app, "Пауза").click().run()
+        for _ in range(100):
+            if controller.snapshot().status == "paused":
+                break
+            time.sleep(0.001)
+        app.run()
+        self.assertEqual(controller.snapshot().status, "paused")
+        self.assertEqual(self.button(app, "Продолжить").key, "pause_resume")
+
+        self.button(app, "Отменить").click().run()
+        self.assertEqual(controller.snapshot().status, "paused")
+        self.assertEqual(marker.read_text(encoding="utf-8"), "keep")
+        self.assertTrue(any("Подтвердите отмену" in item.value for item in app.warning))
+        self.button(app, "Вернуться").click().run()
+        self.assertEqual(controller.snapshot().status, "paused")
+        self.assertEqual(marker.read_text(encoding="utf-8"), "keep")
+        self.assertEqual(self.button(app, "Продолжить").key, "pause_resume")
+
+        self.button(app, "Отменить").click().run()
+        self.button(app, "Подтвердить отмену").click().run()
+        controller.wait(2)
+        app.run()
+        self.assertEqual(controller.snapshot().status, "cancelled")
+        self.assertTrue(any("операция отменена" in item.value for item in app.info))
+        self.assertEqual(marker.read_text(encoding="utf-8"), "keep")
+        self.assertFalse(app.text_input(key="folder").disabled)
+
+    def test_filtering_has_cancel_but_no_pause_button(self):
+        app = self.open_app()
+        controller = app.session_state["operation_controller"]
+        ready = threading.Event()
+
+        def operation(state):
+            state.begin_filtering()
+            ready.set()
+            while True:
+                state.check_cancelled()
+                time.sleep(0.001)
+
+        self.assertTrue(controller.start(operation))
+        self.assertTrue(ready.wait(1))
+        app.run()
+        labels = [button.label for button in app.button]
+        self.assertIn("Отменить", labels)
+        self.assertNotIn("Пауза", labels)
+        self.assertNotIn("Продолжить", labels)
+
+        self.button(app, "Отменить").click().run()
+        self.button(app, "Подтвердить отмену").click().run()
+        controller.wait(2)
+        app.run()
+        self.assertEqual(controller.snapshot().status, "cancelled")
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from filtering import Rule, filter_log
+from operation_state import OperationCancelled
 
 class Tests(unittest.TestCase):
     def setUp(self):
@@ -40,3 +41,23 @@ class Tests(unittest.TestCase):
         result = filter_log(source,self.target,[Rule('banner_id','Одно из значений',('456',))])
         self.assertEqual(result['matched'],0)
         self.assertEqual(self.target.read_text(),'banner_id\n')
+
+    def test_cancel_removes_temporary_result_and_preserves_old_result(self):
+        self.write('banner_id\n208684\n208684\n208684\n')
+        self.target.write_text('old result', encoding='utf-8')
+        calls = 0
+
+        def checkpoint():
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OperationCancelled('stop')
+
+        with self.assertRaises(OperationCancelled):
+            filter_log(
+                self.source, self.target,
+                [Rule('banner_id', 'Одно из значений', ('208684',))],
+                checkpoint=checkpoint,
+            )
+        self.assertEqual(self.target.read_text(encoding='utf-8'), 'old result')
+        self.assertFalse(list(self.root.glob('*.part')))

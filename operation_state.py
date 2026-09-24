@@ -1,12 +1,18 @@
 """Потокобезопасное состояние одной длительной операции."""
 
 from dataclasses import dataclass, replace
-from threading import Lock, Thread
+from threading import Condition, Lock, Thread
 import time
 from typing import Any, Callable
 
 
-ACTIVE_STATUSES = frozenset({"preparing", "downloading", "filtering"})
+ACTIVE_STATUSES = frozenset({
+    "preparing", "downloading", "pausing", "paused", "filtering", "cancelling",
+})
+
+
+class OperationCancelled(Exception):
+    """Кооперативная остановка фоновой операции по команде пользователя."""
 
 
 @dataclass(frozen=True)
@@ -32,16 +38,21 @@ class OperationSnapshot:
 
 
 class OperationState:
-    """Состояние, которое worker обновляет, а UI читает снимками."""
+    """Состояние и команды, которыми обмениваются UI и один worker."""
 
     def __init__(self, clock=time.monotonic, speed_interval=0.5):
         self._clock = clock
         self._speed_interval = speed_interval
         self._lock = Lock()
+        self._condition = Condition(self._lock)
         self._snapshot = OperationSnapshot()
         self._started_at = None
         self._sample_at = None
         self._sample_bytes = 0
+        self._paused_total = 0.0
+        self._pause_started_at = None
+        self._pause_requested = False
+        self._cancel_requested = False
         self._history = ["idle"]
 
     def snapshot(self):
@@ -53,20 +64,25 @@ class OperationState:
             return tuple(self._history)
 
     def prepare(self):
-        with self._lock:
+        with self._condition:
             if self._snapshot.active:
                 return False
             self._snapshot = OperationSnapshot(status="preparing")
             self._started_at = None
             self._sample_at = None
             self._sample_bytes = 0
+            self._paused_total = 0.0
+            self._pause_started_at = None
+            self._pause_requested = False
+            self._cancel_requested = False
             self._history = ["idle", "preparing"]
             return True
 
     def begin_download(self, total_bytes=None):
         total = total_bytes if isinstance(total_bytes, int) and total_bytes > 0 else None
         now = self._clock()
-        with self._lock:
+        with self._condition:
+            self._raise_if_cancelled()
             self._transition("downloading")
             self._snapshot = replace(
                 self._snapshot, total_bytes=total, downloaded_bytes=0,
@@ -80,6 +96,7 @@ class OperationState:
             return
         now = self._clock()
         with self._lock:
+            self._raise_if_cancelled()
             downloaded = self._snapshot.downloaded_bytes + int(byte_count)
             speed = self._snapshot.speed_bytes_per_second
             elapsed = now - self._sample_at
@@ -92,16 +109,76 @@ class OperationState:
                 speed_bytes_per_second=max(0.0, speed),
             )
 
+    def request_pause(self):
+        """Запросить паузу; worker подтвердит её на границе порции."""
+        with self._condition:
+            if self._snapshot.status not in ("downloading", "pausing"):
+                return False
+            if not self._pause_requested:
+                self._pause_requested = True
+                self._transition("pausing")
+            return True
+
+    def resume(self):
+        """Снять паузу или ещё не исполненный запрос паузы."""
+        now = self._clock()
+        with self._condition:
+            if self._snapshot.status not in ("pausing", "paused"):
+                return False
+            if self._pause_started_at is not None:
+                self._paused_total += max(0.0, now - self._pause_started_at)
+                self._pause_started_at = None
+            self._pause_requested = False
+            self._sample_at = now
+            self._sample_bytes = self._snapshot.downloaded_bytes
+            self._transition("downloading")
+            self._condition.notify_all()
+            return True
+
+    def wait_download_permission(self):
+        """Остановиться между range-запросами; вернуть True после реальной паузы."""
+        paused = False
+        with self._condition:
+            self._raise_if_cancelled()
+            while self._pause_requested:
+                if not paused:
+                    paused = True
+                    self._pause_started_at = self._clock()
+                    self._transition("paused")
+                self._condition.wait()
+                self._raise_if_cancelled()
+            return paused
+
+    def check_cancelled(self):
+        with self._lock:
+            self._raise_if_cancelled()
+
+    def request_cancel(self):
+        """Идемпотентно запросить отмену и разбудить worker на паузе."""
+        with self._condition:
+            if not self._snapshot.active:
+                return False
+            first_request = not self._cancel_requested
+            self._cancel_requested = True
+            self._pause_requested = False
+            self._transition("cancelling")
+            self._condition.notify_all()
+            return first_request
+
     def begin_filtering(self):
         now = self._clock()
-        with self._lock:
+        with self._condition:
+            self._raise_if_cancelled()
             downloaded = self._snapshot.downloaded_bytes
             total = self._snapshot.total_bytes
             if self._snapshot.status == "downloading" and total is not None:
                 downloaded = max(downloaded, total)
             speed = self._snapshot.speed_bytes_per_second
-            if self._started_at is not None and now > self._started_at:
-                speed = downloaded / (now - self._started_at)
+            active_elapsed = None
+            if self._started_at is not None:
+                active_elapsed = now - self._started_at - self._paused_total
+            if active_elapsed is not None and active_elapsed > 0:
+                speed = downloaded / active_elapsed
             self._transition("filtering")
             self._snapshot = replace(
                 self._snapshot, downloaded_bytes=downloaded,
@@ -110,24 +187,37 @@ class OperationState:
 
     def update_filtering(self, checked, matched):
         with self._lock:
+            self._raise_if_cancelled()
             self._snapshot = replace(
                 self._snapshot, checked=max(self._snapshot.checked, int(checked)),
                 matched=max(self._snapshot.matched, int(matched)),
             )
 
     def complete(self, result):
-        with self._lock:
+        with self._condition:
+            self._raise_if_cancelled()
             self._transition("completed")
             self._snapshot = replace(self._snapshot, result=result, error=None)
 
+    def cancelled(self):
+        with self._condition:
+            self._transition("cancelled")
+            self._snapshot = OperationSnapshot(status="cancelled")
+            self._condition.notify_all()
+
     def fail(self, error):
-        with self._lock:
+        with self._condition:
             self._transition("failed")
             self._snapshot = replace(
                 self._snapshot,
                 error=f"{type(error).__name__}: {error}",
                 result=None,
             )
+            self._condition.notify_all()
+
+    def _raise_if_cancelled(self):
+        if self._cancel_requested:
+            raise OperationCancelled("Операция отменена пользователем")
 
     def _transition(self, status):
         if self._snapshot.status != status:
@@ -161,10 +251,21 @@ class OperationController:
             self._thread.start()
             return True
 
+    def pause(self):
+        return self.state.request_pause()
+
+    def resume(self):
+        return self.state.resume()
+
+    def cancel(self):
+        return self.state.request_cancel()
+
     def _run(self, operation):
         try:
             result = operation(self.state)
             self.state.complete(result)
+        except OperationCancelled:
+            self.state.cancelled()
         except Exception as error:
             self.state.fail(error)
 

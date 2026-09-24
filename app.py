@@ -191,10 +191,43 @@ def render_operation():
     if poll_operation and not snapshot.active:
         st.rerun(scope="app")
 
+    if not snapshot.active:
+        st.session_state.cancel_confirmation = False
+
+    if snapshot.active:
+        if st.session_state.get("cancel_confirmation", False):
+            st.warning("Подтвердите отмену. Будут удалены только временные файлы и файлы, созданные текущей операцией.")
+            confirm, back = st.columns(2)
+            if confirm.button("Подтвердить отмену", type="primary", key="cancel_confirm"):
+                controller.cancel()
+                st.session_state.cancel_confirmation = False
+                st.rerun(scope="app")
+            if back.button("Вернуться", key="cancel_back"):
+                st.session_state.cancel_confirmation = False
+                st.rerun(scope="app")
+        else:
+            controls = st.columns(2)
+            if snapshot.status in ("downloading", "pausing", "paused"):
+                pause_label = "Продолжить" if snapshot.status in ("pausing", "paused") else "Пауза"
+                if controls[0].button(pause_label, key="pause_resume"):
+                    if snapshot.status in ("pausing", "paused"):
+                        controller.resume()
+                    else:
+                        controller.pause()
+                    st.rerun(scope="app")
+            if controls[1].button("Отменить", key="cancel_request"):
+                st.session_state.cancel_confirmation = True
+                st.rerun(scope="app")
+
     if snapshot.status == "preparing":
         st.info("Состояние: подготовка…")
-    elif snapshot.status == "downloading":
-        st.info("Состояние: скачивание")
+    elif snapshot.status in ("downloading", "pausing", "paused"):
+        status_text = {
+            "downloading": "Состояние: скачивание",
+            "pausing": "Состояние: завершается текущая порция перед паузой…",
+            "paused": "Состояние: пауза",
+        }[snapshot.status]
+        st.info(status_text)
         if snapshot.percent is None:
             st.progress(0.0, text=f"Получено {format_bytes(snapshot.downloaded_bytes)} · общий размер неизвестен")
         else:
@@ -217,6 +250,10 @@ def render_operation():
         if snapshot.downloaded_bytes:
             st.caption(f"Средняя скорость скачивания: {format_speed(snapshot.speed_bytes_per_second)}")
         st.caption(f"Обработано строк: {snapshot.checked:,} · найдено: {snapshot.matched:,}")
+    elif snapshot.status == "cancelling":
+        st.info("Состояние: отмена… Ожидается безопасная остановка и очистка файлов.")
+    elif snapshot.status == "cancelled":
+        st.info("Состояние: операция отменена. Можно начать новую.")
     elif snapshot.status == "failed":
         st.error(f"Состояние: ошибка. Операция не завершена ({snapshot.error})")
         archive_path = st.session_state.get("operation_archive")

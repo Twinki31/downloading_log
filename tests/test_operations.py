@@ -5,6 +5,7 @@ import unittest
 
 from filtering import Rule
 from operations import process_local_log, process_s3_log
+from operation_state import OperationCancelled
 
 
 class OperationTests(unittest.TestCase):
@@ -86,6 +87,36 @@ class OperationTests(unittest.TestCase):
             )
         self.assertTrue(self.archive.exists())
         self.assertFalse(self.destination.exists())
+
+    def test_cancel_filtering_removes_only_archive_created_by_operation(self):
+        unrelated = self.root / "unrelated.part"
+        unrelated.write_bytes(b"keep")
+
+        def cancelled_filter(*_args):
+            self.destination.with_suffix(".part").write_bytes(b"simulated")
+            self.destination.with_suffix(".part").unlink()
+            raise OperationCancelled("stop")
+
+        with self.assertRaises(OperationCancelled):
+            process_s3_log(
+                self.archive, self.destination, self.rules, True,
+                self.download_valid_archive, filterer=cancelled_filter,
+            )
+        self.assertFalse(self.archive.exists())
+        self.assertEqual(unrelated.read_bytes(), b"keep")
+
+    def test_cancel_filtering_never_removes_preexisting_archive(self):
+        self.archive.write_bytes(b"previous archive")
+
+        def cancelled_filter(*_args):
+            raise OperationCancelled("stop")
+
+        with self.assertRaises(OperationCancelled):
+            process_s3_log(
+                self.archive, self.destination, self.rules, False,
+                lambda: self.archive, filterer=cancelled_filter,
+            )
+        self.assertEqual(self.archive.read_bytes(), b"previous archive")
 
 
 if __name__ == "__main__":
