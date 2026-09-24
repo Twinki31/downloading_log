@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -78,12 +80,70 @@ class AppUiTests(unittest.TestCase):
         app.text_input(key="output_name").set_value("result.tsv").run()
         next(button for button in app.button if button.label == "Отфильтровать").click().run()
 
+        # AppTest не исполняет таймер fragment как браузер: вручную делаем
+        # несколько обычных rerun, пока короткий фоновый worker заканчивает.
+        for _ in range(20):
+            if any("Состояние: готово" in item.value for item in app.success):
+                break
+            time.sleep(0.01)
+            app.run()
+
         self.assertFalse(list(app.exception))
-        self.assertTrue(any("Готово:" in item.value for item in app.success))
+        self.assertTrue(any("Состояние: готово" in item.value for item in app.success))
+        self.assertFalse(app.text_input(key="folder").disabled)
+        self.assertFalse(next(button for button in app.button if button.label == "Отфильтровать").disabled)
         self.assertEqual(
             (Path(self.tmp.name) / "result.tsv").read_text(encoding="utf-8"),
             "banner_id\tflag_virtual\tuseragent\n208684\t0\tAndroid\n",
         )
+
+    def test_active_operation_disables_start_and_folder_then_unlocks(self):
+        app = self.open_app()
+        controller = app.session_state["operation_controller"]
+        release = threading.Event()
+
+        def operation(state):
+            state.begin_filtering()
+            release.wait(2)
+            return {
+                "path": str(Path(self.tmp.name) / "result.tsv"),
+                "filter_result": {"checked": 0, "matched": 0, "malformed": 0,
+                                  "preview": []},
+                "archive_note": "Тест завершён.",
+                "archive": None,
+            }
+
+        self.assertTrue(controller.start(operation))
+        app.run()
+        self.assertTrue(app.text_input(key="folder").disabled)
+        start = next(button for button in app.button
+                     if button.label == "Скачать и отфильтровать")
+        self.assertTrue(start.disabled)
+
+        release.set()
+        controller.wait(2)
+        app.run()
+        self.assertFalse(app.text_input(key="folder").disabled)
+        start = next(button for button in app.button
+                     if button.label == "Скачать и отфильтровать")
+        self.assertFalse(start.disabled)
+
+    def test_failed_operation_unlocks_controls_and_shows_error(self):
+        app = self.open_app()
+        controller = app.session_state["operation_controller"]
+
+        def failing_operation(_state):
+            raise OSError("test failure")
+
+        self.assertTrue(controller.start(failing_operation))
+        controller.wait(2)
+        app.run()
+
+        self.assertFalse(app.text_input(key="folder").disabled)
+        start = next(button for button in app.button
+                     if button.label == "Скачать и отфильтровать")
+        self.assertFalse(start.disabled)
+        self.assertTrue(any("OSError: test failure" in item.value for item in app.error))
 
 
 if __name__ == "__main__":

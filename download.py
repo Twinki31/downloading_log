@@ -3,7 +3,8 @@ from pathlib import Path
 import os
 import tempfile
 
-def download_log(date, hour, folder, endpoint, bucket, prefix, profile="", use_proxy=False, progress=None):
+def download_log(date, hour, folder, endpoint, bucket, prefix, profile="", use_proxy=False,
+                 progress=None, metadata=None):
     import boto3
     from botocore.config import Config
     folder = Path(folder).expanduser()
@@ -17,7 +18,20 @@ def download_log(date, hour, folder, endpoint, bucket, prefix, profile="", use_p
     fd, temporary = tempfile.mkstemp(dir=folder, suffix=".part")
     os.close(fd)
     try:
-        # Скачивание последовательно: обновлять интерфейс из callback безопасно.
+        total_bytes = None
+        try:
+            response = client.head_object(Bucket=bucket, Key=key)
+            size = response.get("ContentLength")
+            if isinstance(size, int) and size > 0:
+                total_bytes = size
+        except Exception:
+            # Некоторые S3-совместимые хранилища запрещают HEAD, хотя GET доступен.
+            # В этом случае скачивание продолжается с неизвестным размером.
+            pass
+        if metadata:
+            metadata(total_bytes)
+
+        # Последовательная передача даёт предсказуемый порядок callback.
         from boto3.s3.transfer import TransferConfig
         client.download_file(bucket, key, temporary, Callback=progress,
                              Config=TransferConfig(use_threads=False))

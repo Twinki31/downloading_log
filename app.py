@@ -1,5 +1,6 @@
 """Интерфейс приложения. Запуск: python -m streamlit run app.py"""
 from datetime import date
+from functools import partial
 from pathlib import Path
 import json
 import streamlit as st
@@ -7,8 +8,8 @@ from app_state import (MAX_RULES, default_state, load_state, new_rule,
                        normalise_state, remove_rule, save_state, state_path)
 from fields import FIELDS, label
 from filtering import OPERATORS, Rule
-from download import download_log
-from operations import process_local_log, process_s3_log
+from execution import run_local_operation, run_s3_operation
+from operation_state import OperationController
 
 st.set_page_config(page_title="Логи AdFox", page_icon="📄", layout="wide")
 st.title("Логи AdFox")
@@ -16,6 +17,12 @@ st.caption("Скачивание и фильтрация на вашем ком�
 
 DEFAULTS = default_state()
 STATE_FILE = state_path()
+
+if "operation_controller" not in st.session_state:
+    st.session_state.operation_controller = OperationController()
+controller = st.session_state.operation_controller
+operation_snapshot = controller.snapshot()
+operation_active = operation_snapshot.active
 
 
 def clear_setting_widgets():
@@ -47,7 +54,10 @@ with st.sidebar:
             st.rerun()
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
             st.error("Не удалось прочитать настройки. Проверьте JSON и поля фильтров.")
-    folder = st.text_input("Папка результатов", settings["folder"], key="folder")
+    folder = st.text_input(
+        "Папка результатов", settings["folder"], key="folder",
+        disabled=operation_active,
+    )
     with st.expander("Подключение к S3"):
         endpoint = st.text_input("Адрес S3", settings["endpoint"], key="endpoint")
         bucket = st.text_input("Bucket", settings["bucket"], key="bucket")
@@ -122,8 +132,10 @@ if delete_id is not None or add_rule:
 
 st.download_button("Сохранить настройки", json.dumps(export, ensure_ascii=False, indent=2), "adfox_settings.json", "application/json")
 
-if st.button("Скачать и отфильтровать" if mode == "Скачать из S3" else "Отфильтровать", type="primary"):
-    st.session_state.pop("result", None)
+if st.button(
+    "Скачать и отфильтровать" if mode == "Скачать из S3" else "Отфильтровать",
+    type="primary", disabled=operation_active,
+):
     archive = None
     try:
         if not folder.strip(): raise ValueError("Укажите папку результатов")
@@ -135,55 +147,98 @@ if st.button("Скачать и отфильтровать" if mode == "Скач
         destination = Path(folder).expanduser() / output_name
         if destination.exists() and not replace:
             raise ValueError("Результат уже существует: измените имя или разрешите замену")
-        status = st.empty()
         if mode == "Скачать из S3":
             archive = Path(folder).expanduser() / f"{selected_date:%Y_%m_%d}_{hour:02d}.tsv.gz"
             if archive.exists() and not replace:
                 raise ValueError("Архив уже существует. Выберите «Локальный файл» или разрешите замену")
-            total = [0]
-            def downloaded(size):
-                total[0] += size
-                status.info(f"Скачано: {total[0] / 1024**2:.1f} МБ")
-            def download():
-                return download_log(selected_date, hour, folder, endpoint, bucket, prefix, profile, proxy, downloaded)
-
-            status.info("Скачивание…")
-            result, archive_removed, existed_before = process_s3_log(
-                archive, destination, rules, keep_raw, download,
-                lambda n, m: status.info(f"Обработано: {n:,}. Найдено: {m:,}"),
+            operation = partial(
+                run_s3_operation, selected_date=selected_date, hour=int(hour), folder=folder,
+                endpoint=endpoint, bucket=bucket, prefix=prefix, profile=profile,
+                proxy=proxy, archive=archive, destination=destination,
+                rules=tuple(rules), keep_raw=keep_raw,
             )
-            if archive_removed:
-                archive_note = "Скачанный архив удалён после успешного сохранения итогового TSV."
-            elif existed_before and not keep_raw:
-                archive_note = "Архив не удалён: он существовал до начала этой операции."
-            else:
-                archive_note = f"Сырой архив сохранён: {archive.resolve()}"
         else:
             if not local_path.strip(): raise ValueError("Укажите путь к логу")
             source = Path(local_path).expanduser()
-            status.info("Фильтрация…")
-            result = process_local_log(
-                source, destination, rules,
-                lambda n, m: status.info(f"Обработано: {n:,}. Найдено: {m:,}"),
+            operation = partial(
+                run_local_operation, source=source, destination=destination,
+                rules=tuple(rules),
             )
-            archive_note = "Локальный исходный файл оставлен без изменений."
-        status.empty()
-        st.session_state.result = (str(destination.resolve()), result, archive_note)
+        st.session_state.operation_archive = str(archive.resolve()) if archive else None
+        if controller.start(operation):
+            st.rerun()
     except Exception as error:
         st.error(f"Операция не завершена ({type(error).__name__}): {error}")
-        if archive is not None and archive.exists():
-            st.warning(f"Архив оставлен для диагностики или повторной обработки: {archive.resolve()}")
         st.caption("Проверьте путь, AWS-профиль и доступ к S3. Временные .part удаляются, а итоговый файл заменяется только после успешной обработки.")
-if "result" in st.session_state:
-    path, result, archive_note = st.session_state.result
-    st.success(f"Готово: {path}")
-    st.caption(archive_note)
-    a, b, c = st.columns(3)
-    a.metric("Обработано строк", result["checked"])
-    b.metric("Найдено", result["matched"])
-    c.metric("Некорректных строк", result["malformed"])
-    if result["preview"]:
-        st.caption("Первые 50 найденных строк. Полный результат сохранён на диске.")
-        st.dataframe(result["preview"])
-    else:
-        st.info("Совпадений нет. Сохранён файл с заголовком.")
+
+
+def format_bytes(value):
+    if value >= 1024 ** 2:
+        return f"{value / 1024 ** 2:.1f} МБ"
+    return f"{value / 1024:.1f} КБ"
+
+
+def format_speed(value):
+    return f"{format_bytes(value)}/с"
+
+
+poll_operation = operation_active
+
+
+@st.fragment(run_every=0.5 if poll_operation else None)
+def render_operation():
+    snapshot = controller.snapshot()
+    if poll_operation and not snapshot.active:
+        st.rerun(scope="app")
+
+    if snapshot.status == "preparing":
+        st.info("Состояние: подготовка…")
+    elif snapshot.status == "downloading":
+        st.info("Состояние: скачивание")
+        if snapshot.percent is None:
+            st.progress(0.0, text=f"Получено {format_bytes(snapshot.downloaded_bytes)} · общий размер неизвестен")
+        else:
+            st.progress(
+                snapshot.percent / 100.0,
+                text=(f"Получено {format_bytes(snapshot.downloaded_bytes)} из "
+                      f"{format_bytes(snapshot.total_bytes)} · {snapshot.percent:.1f}%"),
+            )
+        st.caption(f"Текущая скорость: {format_speed(snapshot.speed_bytes_per_second)}")
+    elif snapshot.status == "filtering":
+        st.info("Состояние: фильтрация")
+        if snapshot.total_bytes is not None:
+            st.progress(
+                1.0,
+                text=(f"Скачивание завершено: {format_bytes(snapshot.downloaded_bytes)} из "
+                      f"{format_bytes(snapshot.total_bytes)} · 100%"),
+            )
+        else:
+            st.caption(f"Скачивание завершено: получено {format_bytes(snapshot.downloaded_bytes)}")
+        if snapshot.downloaded_bytes:
+            st.caption(f"Средняя скорость скачивания: {format_speed(snapshot.speed_bytes_per_second)}")
+        st.caption(f"Обработано строк: {snapshot.checked:,} · найдено: {snapshot.matched:,}")
+    elif snapshot.status == "failed":
+        st.error(f"Состояние: ошибка. Операция не завершена ({snapshot.error})")
+        archive_path = st.session_state.get("operation_archive")
+        if archive_path and Path(archive_path).exists():
+            st.warning(f"Архив оставлен для диагностики или повторной обработки: {archive_path}")
+        st.caption("Проверьте путь, AWS-профиль и доступ к S3. Временные .part удаляются, а итоговый файл заменяется только после успешной обработки.")
+    elif snapshot.status == "completed":
+        payload = snapshot.result
+        result = payload["filter_result"]
+        st.success(f"Состояние: готово. Результат: {payload['path']}")
+        st.caption(payload["archive_note"])
+        if snapshot.downloaded_bytes:
+            st.caption(f"Средняя скорость скачивания: {format_speed(snapshot.speed_bytes_per_second)}")
+        a, b, c = st.columns(3)
+        a.metric("Обработано строк", result["checked"])
+        b.metric("Найдено", result["matched"])
+        c.metric("Некорректных строк", result["malformed"])
+        if result["preview"]:
+            st.caption("Первые 50 найденных строк. Полный результат сохранён на диске.")
+            st.dataframe(result["preview"])
+        else:
+            st.info("Совпадений нет. Сохранён файл с заголовком.")
+
+
+render_operation()
