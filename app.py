@@ -3,6 +3,8 @@ from datetime import date
 from pathlib import Path
 import json
 import streamlit as st
+from app_state import (MAX_RULES, default_state, load_state, new_rule,
+                       normalise_state, remove_rule, save_state, state_path)
 from fields import FIELDS, label
 from filtering import OPERATORS, Rule, filter_log
 from download import download_log
@@ -11,40 +13,38 @@ st.set_page_config(page_title="Логи AdFox", page_icon="📄", layout="wide")
 st.title("Логи AdFox")
 st.caption("Скачивание и фильтрация на вашем компьютере")
 
-DEFAULTS = {
-    "endpoint": "https://s3-private.mds.yandex.net",
-    "bucket": "adfox-unload-imho-video", "prefix": "imho-video",
-    "profile": "", "proxy": False,
-    "folder": str(Path.home() / "Downloads" / "adfox_logs"),
-    "rules": [{"field": "banner_id", "operator": "Одно из значений", "text": "208684"},
-              {"field": "flag_virtual", "operator": "Одно из значений", "text": "0"}],
-}
+DEFAULTS = default_state()
+STATE_FILE = state_path()
+
+
+def clear_setting_widgets():
+    prefixes = ("rule_field_", "rule_op_", "rule_text_", "delete_rule_")
+    names = {"endpoint", "bucket", "prefix", "profile", "proxy", "folder", "mode",
+             "local_path", "selected_date", "hour", "output_name", "replace"}
+    for key in list(st.session_state):
+        if key in names or key.startswith(prefixes):
+            del st.session_state[key]
+
+
 if "settings" not in st.session_state:
-    st.session_state.settings = DEFAULTS.copy()
-    st.session_state.rule_count = len(DEFAULTS["rules"])
+    st.session_state.settings, st.session_state.state_warning = load_state(
+        STATE_FILE, DEFAULTS, FIELDS, OPERATORS
+    )
 settings = st.session_state.settings
 with st.sidebar:
     st.header("Настройки")
+    if st.session_state.get("state_warning"):
+        st.warning(st.session_state.pop("state_warning"))
     uploaded = st.file_uploader("Загрузить настройки JSON", type="json")
     if st.button("Применить настройки", disabled=uploaded is None):
         try:
             data = json.load(uploaded)
-            merged = DEFAULTS | data
-            if not isinstance(data, dict) or not isinstance(merged["rules"], list) or not 1 <= len(merged["rules"]) <= 30:
-                raise ValueError("Нужны от 1 до 30 фильтров")
-            for key in ("endpoint", "bucket", "prefix", "profile", "folder"):
-                if not isinstance(merged[key], str): raise ValueError("Некорректные настройки")
-            if not isinstance(merged["proxy"], bool): raise ValueError("Некорректная настройка proxy")
-            for r in merged["rules"]:
-                if r["field"] not in FIELDS or r["operator"] not in OPERATORS or not isinstance(r["text"], str):
-                    raise ValueError("Некорректный фильтр")
-            for key in list(st.session_state):
-                if key.startswith("rule_") or key in ("endpoint", "bucket", "prefix", "profile", "proxy", "folder"):
-                    del st.session_state[key]
+            merged, _ = normalise_state(data, DEFAULTS, FIELDS, OPERATORS)
+            clear_setting_widgets()
             st.session_state.settings = merged
-            st.session_state.rule_count = len(merged["rules"])
+            save_state(STATE_FILE, merged)
             st.rerun()
-        except (ValueError, TypeError, KeyError):
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
             st.error("Не удалось прочитать настройки. Проверьте JSON и поля фильтров.")
     folder = st.text_input("Папка результатов", settings["folder"], key="folder")
     with st.expander("Подключение к S3"):
@@ -54,39 +54,62 @@ with st.sidebar:
         profile = st.text_input("AWS-профиль (пусто — стандартный)", settings["profile"], key="profile")
         proxy = st.checkbox("Использовать proxy из окружения", settings["proxy"], key="proxy")
     st.caption("Используется существующий AWS-профиль. Ключи доступа в настройки приложения не записываются.")
+    st.caption(f"Рабочее состояние сохраняется автоматически: {STATE_FILE}")
 
-mode = st.radio("Источник", ["Скачать из S3", "Локальный файл"], horizontal=True)
+mode_options = ["Скачать из S3", "Локальный файл"]
+mode = st.radio("Источник", mode_options, index=mode_options.index(settings["mode"]), horizontal=True, key="mode")
 if mode == "Скачать из S3":
     left, right = st.columns(2)
-    selected_date = left.date_input("Дата в имени файла", date.today())
-    hour = right.number_input("Час в имени файла", 0, 23, 12)
+    selected_date = left.date_input("Дата в имени файла", date.fromisoformat(settings["selected_date"]), key="selected_date")
+    hour = right.number_input("Час в имени файла", 0, 23, settings["hour"], key="hour")
     st.caption("Дата и час используются как есть, без преобразования часового пояса.")
 else:
-    local_path = st.text_input("Полный путь к файлу .tsv.gz или .tsv")
+    local_path = st.text_input("Полный путь к файлу .tsv.gz или .tsv", settings["local_path"], key="local_path")
 
 st.subheader("Фильтры")
 st.caption("Все строки условий должны выполняться одновременно (И). Значения внутри одного фильтра — ИЛИ. Регистр учитывается.")
 rules, saved_rules = [], []
-for i in range(st.session_state.rule_count):
-    default = settings["rules"][i] if i < len(settings["rules"]) else {"field": "useragent", "operator": "Содержит", "text": ""}
-    a, b, c = st.columns([2, 2, 3])
-    field = a.selectbox(f"Поле {i+1}", FIELDS, index=FIELDS.index(default["field"]), format_func=label, key=f"rule_field_{i}")
-    op = b.selectbox(f"Условие {i+1}", OPERATORS, index=OPERATORS.index(default["operator"]), key=f"rule_op_{i}")
-    raw = c.text_area(f"Значения {i+1} — каждое с новой строки", default["text"], height=90, key=f"rule_text_{i}", disabled=op in ("Пусто", "Не пусто"))
+delete_id = None
+for i, default in enumerate(settings["rules"]):
+    rule_id = default["id"]
+    a, b, c, d = st.columns([2, 2, 3, 0.8])
+    field = a.selectbox(f"Поле {i+1}", FIELDS, index=FIELDS.index(default["field"]), format_func=label, key=f"rule_field_{rule_id}")
+    op = b.selectbox(f"Условие {i+1}", OPERATORS, index=OPERATORS.index(default["operator"]), key=f"rule_op_{rule_id}")
+    raw = c.text_area(f"Значения {i+1} — каждое с новой строки", default["text"], height=90, key=f"rule_text_{rule_id}", disabled=op in ("Пусто", "Не пусто"))
+    if d.button("Удалить", key=f"delete_rule_{rule_id}", disabled=len(settings["rules"]) <= 1,
+                help=f"Удалить фильтр {i+1}"):
+        delete_id = rule_id
     rules.append(Rule(field, op, tuple(x for x in raw.splitlines() if x != "")))
-    saved_rules.append({"field": field, "operator": op, "text": raw})
-a, b = st.columns(2)
-if a.button("＋ Добавить фильтр", disabled=st.session_state.rule_count >= 30):
-    st.session_state.rule_count += 1
-    st.rerun()
-if b.button("Удалить последний фильтр", disabled=st.session_state.rule_count <= 1):
-    st.session_state.rule_count -= 1
-    st.rerun()
+    saved_rules.append({"id": rule_id, "field": field, "operator": op, "text": raw})
+add_rule = st.button("＋ Добавить фильтр", disabled=len(saved_rules) >= MAX_RULES)
 st.info(" И ".join(f"{label(r.field)}: {r.operator.lower()}" + (f" [{'; '.join(r.values)}]" if r.operator not in ("Пусто", "Не пусто") else "") for r in rules))
 st.caption("flag_virtual = 0 перенесён из исходного скрипта и теперь виден как обычный редактируемый фильтр. Неизвестные поля оставлены без выдуманных расшифровок.")
-output_name = st.text_input("Имя результата", "filtered.tsv")
-replace = st.checkbox("Разрешить замену существующих файлов с теми же именами")
-export = dict(endpoint=endpoint, bucket=bucket, prefix=prefix, profile=profile, proxy=proxy, folder=folder, rules=saved_rules)
+output_name = st.text_input("Имя результата", settings["output_name"], key="output_name")
+replace = st.checkbox("Разрешить замену существующих файлов с теми же именами", key="replace")
+export = dict(
+    schema_version=settings["schema_version"], endpoint=endpoint, bucket=bucket,
+    prefix=prefix, profile=profile, proxy=proxy, folder=folder, mode=mode,
+    local_path=st.session_state.get("local_path", settings["local_path"]),
+    output_name=output_name,
+    selected_date=st.session_state.get("selected_date", date.fromisoformat(settings["selected_date"])).isoformat(),
+    hour=int(st.session_state.get("hour", settings["hour"])), rules=saved_rules,
+)
+if delete_id is not None:
+    export["rules"] = remove_rule(saved_rules, delete_id)
+elif add_rule:
+    export["rules"] = saved_rules + [new_rule()]
+
+try:
+    save_state(STATE_FILE, export)
+    st.session_state.settings = export
+except OSError as error:
+    st.warning(f"Не удалось автоматически сохранить рабочее состояние: {error}")
+
+if delete_id is not None or add_rule:
+    clear_setting_widgets()
+    st.session_state.settings = export
+    st.rerun()
+
 st.download_button("Сохранить настройки", json.dumps(export, ensure_ascii=False, indent=2), "adfox_settings.json", "application/json")
 
 if st.button("Скачать и отфильтровать" if mode == "Скачать из S3" else "Отфильтровать", type="primary"):
