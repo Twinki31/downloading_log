@@ -1,6 +1,7 @@
 .venv/
 __pycache__/
 *.part
+/prompts/
 *.tmp
 .DS_Store
 .pytest_cache/
@@ -10,7 +11,7 @@ __pycache__/
 coverage.xml
 htmlcov/
 junit.xml
-/adfox_settings.json
-/state.json
-/filtered.tsv
+adfox_settings.json
+state.json
+filtered.tsv
 [0-9][0-9][0-9][0-9]_[0-9][0-9]_[0-9][0-9]_[0-9][0-9].tsv.gz
