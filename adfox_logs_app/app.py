@@ -89,7 +89,8 @@ else:
 st.subheader("Фильтры")
 st.caption("Все строки условий должны выполняться одновременно (И). Значения внутри одного фильтра — ИЛИ. Регистр учитывается.")
 with st.container(border=True, width="content"):
-    st.page_link("pages/1_Описание_полей.py", label="Подробное описание полей", icon="📖")
+    if st.button("Подробное описание полей →"):
+        st.switch_page("pages/1_Описание_полей.py")
 rules, saved_rules = [], []
 delete_id = None
 for i, default in enumerate(settings["rules"]):

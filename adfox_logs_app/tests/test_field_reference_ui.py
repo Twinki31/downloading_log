@@ -7,13 +7,14 @@ from fields import FIELDS
 
 
 APP = Path(__file__).parents[1] / "app.py"
-PAGE = "pages/1_Описание_полей.py"
 
 
 class FieldReferenceUiTests(unittest.TestCase):
     def test_page_shows_all_full_descriptions_without_selector(self):
         app = AppTest.from_file(str(APP), default_timeout=10).run()
-        app.switch_page(PAGE).run()
+        details = next(button for button in app.button
+                       if button.label == "Подробное описание полей →")
+        details.click().run()
         self.assertFalse(list(app.exception))
         self.assertEqual(app.title[0].value, "Описание полей")
         self.assertFalse(list(app.selectbox))

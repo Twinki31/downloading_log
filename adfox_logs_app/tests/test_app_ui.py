@@ -33,11 +33,11 @@ class AppUiTests(unittest.TestCase):
     def test_delete_middle_keeps_values_and_persists_after_restart(self):
         app = self.open_app()
         app.text_area[0].set_value("первый\nA").run()
-        app.button[2].click().run()
+        self.button(app, "＋ Добавить фильтр").click().run()
         self.assertEqual(len(app.text_area), 3)
         app.text_area[2].set_value("последний\nC").run()
 
-        app.button[1].click().run()
+        [button for button in app.button if button.label == "Удалить"][1].click().run()
         self.assertEqual([item.value for item in app.text_area],
                          ["первый\nA", "последний\nC"])
 
