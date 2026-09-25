@@ -9,6 +9,7 @@ class UiLocalizationTests(unittest.TestCase):
         expected = {
             "Deploy", "System", "Light", "Dark", "Rerun", "Auto rerun",
             "Clear cache", "Print", "Record screen", "Main menu",
+            "File change.", "Always rerun", "Stop", "Stopping...",
         }
         self.assertTrue(expected.issubset(TRANSLATIONS))
         self.assertIn("Made with Streamlit v", PREFIX_TRANSLATIONS)
