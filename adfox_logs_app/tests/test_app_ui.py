@@ -53,6 +53,18 @@ class AppUiTests(unittest.TestCase):
         restarted = self.open_app()
         self.assertFalse(restarted.checkbox(key="replace").value)
 
+    def test_field_selector_uses_short_descriptions(self):
+        app = self.open_app()
+        options = app.selectbox[0].options
+        self.assertIn("useragent (данные браузера и устройства)", options)
+        self.assertIn("oc63 (доп. характеристика 63)", options)
+        self.assertNotIn("нет описания", "\n".join(options[:97]))
+
+    def test_legacy_filter_explanation_is_not_shown(self):
+        app = self.open_app()
+        captions = "\n".join(item.value for item in app.caption)
+        self.assertNotIn("перенесён из исходного скрипта", captions)
+
     def test_keep_raw_persists_and_is_disabled_for_local_source(self):
         app = self.open_app()
         keep_raw = app.checkbox(key="keep_raw")

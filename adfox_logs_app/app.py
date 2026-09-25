@@ -88,11 +88,13 @@ else:
 
 st.subheader("Фильтры")
 st.caption("Все строки условий должны выполняться одновременно (И). Значения внутри одного фильтра — ИЛИ. Регистр учитывается.")
+with st.container(border=True, width="content"):
+    st.page_link("pages/1_Описание_полей.py", label="Подробное описание полей", icon="📖")
 rules, saved_rules = [], []
 delete_id = None
 for i, default in enumerate(settings["rules"]):
     rule_id = default["id"]
-    a, b, c, d = st.columns([2, 2, 3, 0.8])
+    a, b, c, d = st.columns([2.7, 1.8, 3, 0.8])
     field = a.selectbox(f"Поле {i+1}", FIELDS, index=FIELDS.index(default["field"]), format_func=label, key=f"rule_field_{rule_id}")
     op = b.selectbox(f"Условие {i+1}", OPERATORS, index=OPERATORS.index(default["operator"]), key=f"rule_op_{rule_id}")
     raw = c.text_area(f"Значения {i+1} — каждое с новой строки", default["text"], height=90, key=f"rule_text_{rule_id}", disabled=op in ("Пусто", "Не пусто"))
@@ -103,7 +105,6 @@ for i, default in enumerate(settings["rules"]):
     saved_rules.append({"id": rule_id, "field": field, "operator": op, "text": raw})
 add_rule = st.button("＋ Добавить фильтр", disabled=len(saved_rules) >= MAX_RULES)
 st.info(" И ".join(f"{label(r.field)}: {r.operator.lower()}" + (f" [{'; '.join(r.values)}]" if r.operator not in ("Пусто", "Не пусто") else "") for r in rules))
-st.caption("flag_virtual = 0 перенесён из исходного скрипта и теперь виден как обычный редактируемый фильтр. Неизвестные поля оставлены без выдуманных расшифровок.")
 output_name = st.text_input("Имя результата", settings["output_name"], key="output_name")
 replace = st.checkbox("Разрешить замену существующих файлов с теми же именами", key="replace")
 export = dict(
