@@ -69,15 +69,6 @@ with st.sidebar:
 
 mode_options = ["Скачать из S3", "Локальный файл"]
 mode = st.radio("Источник", mode_options, index=mode_options.index(settings["mode"]), horizontal=True, key="mode")
-keep_raw = st.checkbox(
-    "Оставить сырой лог", settings["keep_raw"], key="keep_raw",
-    disabled=mode != "Скачать из S3",
-    help="Относится только к архивам .tsv.gz, скачанным приложением из S3.",
-)
-if mode == "Скачать из S3":
-    st.caption("Если выключить флажок, новый архив удалится только после успешного сохранения итогового TSV.")
-else:
-    st.caption("Локальный исходный файл никогда не изменяется и не удаляется.")
 if mode == "Скачать из S3":
     left, right = st.columns(2)
     selected_date = left.date_input("Дата в имени файла", date.fromisoformat(settings["selected_date"]), key="selected_date")
@@ -98,6 +89,7 @@ for i, default in enumerate(settings["rules"]):
     field = a.selectbox(f"Поле {i+1}", FIELDS, index=FIELDS.index(default["field"]), format_func=label, key=f"rule_field_{rule_id}")
     op = b.selectbox(f"Условие {i+1}", OPERATORS, index=OPERATORS.index(default["operator"]), key=f"rule_op_{rule_id}")
     raw = c.text_area(f"Значения {i+1} — каждое с новой строки", default["text"], height=90, key=f"rule_text_{rule_id}", disabled=op in ("Пусто", "Не пусто"))
+    d.markdown("<div style='height: 1.75rem'></div>", unsafe_allow_html=True)
     if d.button("Удалить", key=f"delete_rule_{rule_id}", disabled=len(settings["rules"]) <= 1,
                 help=f"Удалить фильтр {i+1}"):
         delete_id = rule_id
@@ -107,6 +99,15 @@ add_rule = st.button("＋ Добавить фильтр", disabled=len(saved_rul
 st.info(" И ".join(f"{label(r.field)}: {r.operator.lower()}" + (f" [{'; '.join(r.values)}]" if r.operator not in ("Пусто", "Не пусто") else "") for r in rules))
 output_name = st.text_input("Имя результата", settings["output_name"], key="output_name")
 replace = st.checkbox("Разрешить замену существующих файлов с теми же именами", key="replace")
+keep_raw = st.checkbox(
+    "Оставить сырой лог", settings["keep_raw"], key="keep_raw",
+    disabled=mode != "Скачать из S3",
+    help="Относится только к архивам .tsv.gz, скачанным приложением из S3.",
+)
+if mode == "Скачать из S3":
+    st.caption("Если выключить флажок, новый архив удалится только после успешного сохранения итогового TSV.")
+else:
+    st.caption("Локальный исходный файл никогда не изменяется и не удаляется.")
 export = dict(
     schema_version=settings["schema_version"], endpoint=endpoint, bucket=bucket,
     prefix=prefix, profile=profile, proxy=proxy, keep_raw=keep_raw, folder=folder, mode=mode,

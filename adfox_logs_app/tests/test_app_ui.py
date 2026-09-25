@@ -67,6 +67,11 @@ class AppUiTests(unittest.TestCase):
 
     def test_keep_raw_persists_and_is_disabled_for_local_source(self):
         app = self.open_app()
+        checkbox_labels = [checkbox.label for checkbox in app.checkbox]
+        self.assertLess(
+            checkbox_labels.index("Разрешить замену существующих файлов с теми же именами"),
+            checkbox_labels.index("Оставить сырой лог"),
+        )
         keep_raw = app.checkbox(key="keep_raw")
         self.assertTrue(keep_raw.value)
         self.assertFalse(keep_raw.disabled)
