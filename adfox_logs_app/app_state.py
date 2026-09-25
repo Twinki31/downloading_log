@@ -1,7 +1,7 @@
 """Чтение, проверка и атомарное сохранение пользовательских настроек."""
 
 from copy import deepcopy
-from datetime import date
+from datetime import date, datetime
 import json
 import os
 from pathlib import Path
@@ -11,6 +11,7 @@ from uuid import uuid4
 
 SCHEMA_VERSION = 1
 MAX_RULES = 30
+MIN_SELECTED_DATE = date(2020, 1, 1)
 
 
 def new_rule(field="useragent", operator="Содержит", text=""):
@@ -19,6 +20,7 @@ def new_rule(field="useragent", operator="Содержит", text=""):
 
 
 def default_state():
+    now = datetime.now()
     return {
         "schema_version": SCHEMA_VERSION,
         "endpoint": "https://s3-private.mds.yandex.net",
@@ -31,8 +33,8 @@ def default_state():
         "mode": "Скачать из S3",
         "local_path": "",
         "output_name": "filtered.tsv",
-        "selected_date": date.today().isoformat(),
-        "hour": 12,
+        "selected_date": now.date().isoformat(),
+        "hour": now.hour,
         "rules": [
             new_rule("banner_id", "Одно из значений", "208684"),
             new_rule("flag_virtual", "Одно из значений", "0"),
@@ -132,6 +134,30 @@ def normalise_state(raw, defaults, fields, operators, recover=False):
             warnings.append("час сброшен")
         else:
             raise ValueError("Некорректный час")
+
+    # Дата и час образуют один момент выбора, поэтому проверяем их вместе.
+    # Это также не позволяет обойти ограничения интерфейса через JSON.
+    selected_date = date.fromisoformat(result["selected_date"])
+    now = datetime.now()
+    if selected_date < MIN_SELECTED_DATE:
+        if recover:
+            result["selected_date"] = MIN_SELECTED_DATE.isoformat()
+            warnings.append("дата ограничена 2020 годом")
+        else:
+            raise ValueError("Дата не может быть раньше 2020 года")
+    elif selected_date > now.date():
+        if recover:
+            result["selected_date"] = now.date().isoformat()
+            result["hour"] = now.hour
+            warnings.append("будущая дата и час сброшены")
+        else:
+            raise ValueError("Нельзя выбрать будущую дату")
+    elif selected_date == now.date() and result["hour"] > now.hour:
+        if recover:
+            result["hour"] = now.hour
+            warnings.append("будущий час сброшен")
+        else:
+            raise ValueError("Нельзя выбрать будущий час")
 
     if "rules" in raw:
         rules_raw = raw["rules"]

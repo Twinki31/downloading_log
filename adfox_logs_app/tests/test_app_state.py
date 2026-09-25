@@ -1,4 +1,5 @@
 import json
+from datetime import date, datetime, timedelta
 from pathlib import Path
 import tempfile
 import unittest
@@ -29,7 +30,8 @@ class StateTests(unittest.TestCase):
         state = default_state()
         state.update({"folder": "D:/Логи", "profile": "adfox", "proxy": True,
                       "mode": "Локальный файл", "local_path": "D:/вход.tsv.gz",
-                      "output_name": "готово.tsv", "hour": 23})
+                      "output_name": "готово.tsv", "selected_date": "2020-01-01",
+                      "hour": 23})
         save_state(self.path, state)
         loaded, warning = self.load()
         self.assertEqual(loaded, state)
@@ -74,6 +76,35 @@ class StateTests(unittest.TestCase):
         loaded, warning = self.load()
         self.assertFalse(loaded["keep_raw"])
         self.assertIsNone(warning)
+
+    def test_date_and_hour_are_saved_and_restored(self):
+        state = default_state()
+        state.update({"selected_date": "2021-06-15", "hour": 7})
+        save_state(self.path, state)
+        loaded, warning = self.load()
+        self.assertEqual((loaded["selected_date"], loaded["hour"]), ("2021-06-15", 7))
+        self.assertIsNone(warning)
+
+    def test_import_rejects_dates_before_2020_and_future_date_or_hour(self):
+        for selected_date, hour in (
+            ("2019-12-31", 23),
+            ((date.today() + timedelta(days=1)).isoformat(), 0),
+            (date.today().isoformat(), datetime.now().hour + 1),
+        ):
+            if hour > 23:
+                continue
+            raw = {"selected_date": selected_date, "hour": hour}
+            with self.subTest(selected_date=selected_date, hour=hour):
+                with self.assertRaises(ValueError):
+                    normalise_state(raw, self.defaults, FIELDS, OPERATORS)
+
+    def test_recovery_clamps_out_of_range_date_and_hour(self):
+        raw = {"selected_date": (date.today() + timedelta(days=1)).isoformat(), "hour": 23}
+        state, warning = normalise_state(raw, self.defaults, FIELDS, OPERATORS, recover=True)
+        now = datetime.now()
+        self.assertEqual(state["selected_date"], now.date().isoformat())
+        self.assertLessEqual(state["hour"], now.hour)
+        self.assertIn("будущ", warning)
 
     def test_newer_file_recovers_known_fields_with_warning(self):
         raw = {"schema_version": 999, "folder": "/known", "future": True}

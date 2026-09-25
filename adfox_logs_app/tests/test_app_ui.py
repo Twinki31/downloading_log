@@ -1,4 +1,6 @@
 import os
+import json
+from datetime import date, datetime, timedelta
 from pathlib import Path
 import tempfile
 import threading
@@ -69,8 +71,28 @@ class AppUiTests(unittest.TestCase):
         app = self.open_app()
         self.assertEqual(app.date_input[0].label, "Дата")
         self.assertEqual(app.number_input[0].label, "Час")
+        self.assertEqual(app.date_input[0].min, date(2020, 1, 1))
+        self.assertEqual(app.date_input[0].max, date.today())
+        self.assertEqual(app.number_input[0].max, datetime.now().hour)
         captions = "\n".join(item.value for item in app.caption)
         self.assertNotIn("Если выключить флажок, новый архив удалится", captions)
+
+    def test_json_import_applies_date_and_hour(self):
+        app = self.open_app()
+        imported = dict(app.session_state["settings"])
+        imported.update({"selected_date": "2020-07-08", "hour": 6})
+        app.file_uploader[0].set_value(
+            ("settings.json", json.dumps(imported).encode("utf-8"), "application/json")
+        ).run()
+        self.button(app, "Применить настройки").click().run()
+
+        self.assertEqual(app.date_input[0].value, date(2020, 7, 8))
+        self.assertEqual(app.number_input[0].value, 6)
+
+    def test_past_date_allows_any_hour(self):
+        app = self.open_app()
+        app.date_input[0].set_value(date.today() - timedelta(days=1)).run()
+        self.assertEqual(app.number_input[0].max, 23)
 
     def test_keep_raw_persists_and_is_disabled_for_local_source(self):
         app = self.open_app()

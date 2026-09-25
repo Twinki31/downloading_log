@@ -1,5 +1,5 @@
 """Интерфейс приложения. Запуск: python -m streamlit run app.py"""
-from datetime import date
+from datetime import date, datetime
 from functools import partial
 from pathlib import Path
 import json
@@ -16,6 +16,7 @@ st.set_page_config(page_title="Логи AdFox", page_icon="📄", layout="wide")
 st.title("Логи AdFox")
 st.caption("Скачивание и фильтрация на вашем компьютере")
 
+MIN_SELECTED_DATE = date(2020, 1, 1)
 DEFAULTS = default_state()
 STATE_FILE = state_path()
 
@@ -50,6 +51,10 @@ with st.sidebar:
             data = json.load(uploaded)
             merged, _ = normalise_state(data, DEFAULTS, FIELDS, OPERATORS)
             clear_setting_widgets()
+            # Явно восстанавливаем типы значений виджетов из JSON. Иначе
+            # Streamlit может сохранить их прежнее состояние между rerun.
+            st.session_state.selected_date = date.fromisoformat(merged["selected_date"])
+            st.session_state.hour = merged["hour"]
             st.session_state.settings = merged
             save_state(STATE_FILE, merged)
             st.rerun()
@@ -72,8 +77,23 @@ mode_options = ["Скачать из S3", "Локальный файл"]
 mode = st.radio("Источник", mode_options, index=mode_options.index(settings["mode"]), horizontal=True, key="mode")
 if mode == "Скачать из S3":
     left, right = st.columns(2)
-    selected_date = left.date_input("Дата", date.fromisoformat(settings["selected_date"]), key="selected_date")
-    hour = right.number_input("Час", 0, 23, settings["hour"], key="hour")
+    now = datetime.now()
+    date_default = {} if "selected_date" in st.session_state else {
+        "value": date.fromisoformat(settings["selected_date"])
+    }
+    selected_date = left.date_input(
+        "Дата", **date_default,
+        min_value=MIN_SELECTED_DATE, max_value=now.date(), key="selected_date",
+    )
+    max_hour = now.hour if selected_date == now.date() else 23
+    if st.session_state.get("hour", settings["hour"]) > max_hour:
+        st.session_state.hour = max_hour
+    hour_default = {} if "hour" in st.session_state else {
+        "value": min(settings["hour"], max_hour)
+    }
+    hour = right.number_input(
+        "Час", min_value=0, max_value=max_hour, key="hour", **hour_default,
+    )
     st.caption("Дата и час используются как есть, без преобразования часового пояса.")
 else:
     local_path = st.text_input("Полный путь к файлу .tsv.gz или .tsv", settings["local_path"], key="local_path")
