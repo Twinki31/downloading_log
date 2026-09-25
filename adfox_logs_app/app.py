@@ -10,6 +10,7 @@ from fields import FIELDS, label
 from filtering import OPERATORS, Rule
 from execution import run_local_operation, run_s3_operation
 from operation_state import OperationController
+from ui_localization import install_streamlit_localization
 
 st.set_page_config(page_title="Логи AdFox", page_icon="📄", layout="wide")
 st.title("Логи AdFox")
@@ -297,3 +298,4 @@ def render_operation():
 
 
 render_operation()
+install_streamlit_localization()
