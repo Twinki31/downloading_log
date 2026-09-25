@@ -65,6 +65,13 @@ class AppUiTests(unittest.TestCase):
         captions = "\n".join(item.value for item in app.caption)
         self.assertNotIn("перенесён из исходного скрипта", captions)
 
+    def test_short_date_and_hour_labels_without_raw_archive_caption(self):
+        app = self.open_app()
+        self.assertEqual(app.date_input[0].label, "Дата")
+        self.assertEqual(app.number_input[0].label, "Час")
+        captions = "\n".join(item.value for item in app.caption)
+        self.assertNotIn("Если выключить флажок, новый архив удалится", captions)
+
     def test_keep_raw_persists_and_is_disabled_for_local_source(self):
         app = self.open_app()
         checkbox_labels = [checkbox.label for checkbox in app.checkbox]

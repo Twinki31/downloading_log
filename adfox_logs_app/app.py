@@ -71,8 +71,8 @@ mode_options = ["Скачать из S3", "Локальный файл"]
 mode = st.radio("Источник", mode_options, index=mode_options.index(settings["mode"]), horizontal=True, key="mode")
 if mode == "Скачать из S3":
     left, right = st.columns(2)
-    selected_date = left.date_input("Дата в имени файла", date.fromisoformat(settings["selected_date"]), key="selected_date")
-    hour = right.number_input("Час в имени файла", 0, 23, settings["hour"], key="hour")
+    selected_date = left.date_input("Дата", date.fromisoformat(settings["selected_date"]), key="selected_date")
+    hour = right.number_input("Час", 0, 23, settings["hour"], key="hour")
     st.caption("Дата и час используются как есть, без преобразования часового пояса.")
 else:
     local_path = st.text_input("Полный путь к файлу .tsv.gz или .tsv", settings["local_path"], key="local_path")
@@ -81,6 +81,24 @@ st.subheader("Фильтры")
 st.caption("Все строки условий должны выполняться одновременно (И). Значения внутри одного фильтра — ИЛИ. Регистр учитывается.")
 if st.button("Подробное описание полей →"):
     st.switch_page("pages/1_Описание_полей.py")
+st.markdown(
+    """
+    <style>
+    div[class*='st-key-rule_text_'],
+    div[class*='st-key-rule_text_'] [data-testid='stTextArea'],
+    div[class*='st-key-rule_text_'] [data-testid='stTextAreaRootElement'] {
+        height: auto !important;
+        overflow: visible !important;
+    }
+    div[class*='st-key-rule_text_'] textarea {
+        height: 2.375rem;
+        min-height: 2.375rem !important;
+        resize: vertical;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 rules, saved_rules = [], []
 delete_id = None
 for i, default in enumerate(settings["rules"]):
@@ -88,7 +106,7 @@ for i, default in enumerate(settings["rules"]):
     a, b, c, d = st.columns([2.7, 1.8, 3, 0.8])
     field = a.selectbox(f"Поле {i+1}", FIELDS, index=FIELDS.index(default["field"]), format_func=label, key=f"rule_field_{rule_id}")
     op = b.selectbox(f"Условие {i+1}", OPERATORS, index=OPERATORS.index(default["operator"]), key=f"rule_op_{rule_id}")
-    raw = c.text_area(f"Значения {i+1} — каждое с новой строки", default["text"], height=90, key=f"rule_text_{rule_id}", disabled=op in ("Пусто", "Не пусто"))
+    raw = c.text_area(f"Значения {i+1} — каждое с новой строки", default["text"], key=f"rule_text_{rule_id}", disabled=op in ("Пусто", "Не пусто"))
     d.markdown("<div style='height: 1.75rem'></div>", unsafe_allow_html=True)
     if d.button("Удалить", key=f"delete_rule_{rule_id}", disabled=len(settings["rules"]) <= 1,
                 help=f"Удалить фильтр {i+1}"):
@@ -104,9 +122,7 @@ keep_raw = st.checkbox(
     disabled=mode != "Скачать из S3",
     help="Относится только к архивам .tsv.gz, скачанным приложением из S3.",
 )
-if mode == "Скачать из S3":
-    st.caption("Если выключить флажок, новый архив удалится только после успешного сохранения итогового TSV.")
-else:
+if mode != "Скачать из S3":
     st.caption("Локальный исходный файл никогда не изменяется и не удаляется.")
 export = dict(
     schema_version=settings["schema_version"], endpoint=endpoint, bucket=bucket,
