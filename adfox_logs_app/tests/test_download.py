@@ -25,6 +25,8 @@ class RangeClient:
         self.release_first_read = threading.Event()
         self.block_first_read = False
         self.fail_get = None
+        self.close_calls = 0
+        self.close_error = None
 
     def head_object(self, **_kwargs):
         return {"ContentLength": len(self.data), "ETag": self.etag}
@@ -47,7 +49,10 @@ class RangeClient:
         return {"Body": ControlledBody(payload), "ETag": self.etag}
 
     def close(self):
+        self.close_calls += 1
         self.closed = True
+        if self.close_error:
+            raise self.close_error
 
 
 class FakeSession:
@@ -216,6 +221,42 @@ class DownloadTests(unittest.TestCase):
             self.assertEqual(archive.read_bytes(), b"previous archive")
             self.assertFalse(list(root.glob("*.part")))
             self.assertTrue(client.closed)
+
+    def test_mkstemp_error_closes_client_and_preserves_existing_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive = root / "2026_09_24_12.tsv.gz"
+            archive.write_bytes(b"previous archive")
+            unrelated = root / "unrelated.part"
+            unrelated.write_bytes(b"keep")
+            client = RangeClient(b"new archive")
+            original_error = OSError("temporary file failed")
+
+            with patch("download.tempfile.mkstemp", side_effect=original_error):
+                with self.assertRaises(OSError) as raised:
+                    self.run_download(root, client)
+
+            self.assertIs(raised.exception, original_error)
+            self.assertEqual(client.close_calls, 1)
+            self.assertEqual(archive.read_bytes(), b"previous archive")
+            self.assertEqual(unrelated.read_bytes(), b"keep")
+
+    def test_close_error_does_not_replace_mkstemp_error(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            client = RangeClient(b"new archive")
+            client.close_error = OSError("close failed with secret details")
+            original_error = OSError("temporary file failed")
+
+            with patch("download.tempfile.mkstemp", side_effect=original_error):
+                with self.assertRaises(OSError) as raised:
+                    self.run_download(temporary, client)
+
+            self.assertIs(raised.exception, original_error)
+            self.assertEqual(client.close_calls, 1)
+            self.assertEqual(
+                raised.exception.__notes__,
+                ["Дополнительно не удалось закрыть S3-клиент: OSError"],
+            )
 
     def test_replace_error_preserves_old_archive_and_removes_temporary(self):
         with tempfile.TemporaryDirectory() as temporary:

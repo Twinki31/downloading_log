@@ -45,10 +45,12 @@ def download_log(date, hour, folder, endpoint, bucket, prefix, profile="", use_p
         connect_timeout=15, read_timeout=60,
     )
     client = session.client("s3", endpoint_url=endpoint, config=config)
-    fd, temporary_name = tempfile.mkstemp(dir=folder, suffix=".part")
-    os.close(fd)
-    temporary = Path(temporary_name)
+    temporary = None
+    primary_error = None
     try:
+        fd, temporary_name = tempfile.mkstemp(dir=folder, suffix=".part")
+        temporary = Path(temporary_name)
+        os.close(fd)
         identity = _object_identity(client, bucket, key)
         total_bytes, etag, _version_id = identity
         if metadata:
@@ -111,8 +113,32 @@ def download_log(date, hour, folder, endpoint, bucket, prefix, profile="", use_p
             # Ownership of the completed staging file passes to the caller.
             result = temporary
             temporary = None
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
+        cleanup_errors = []
         if temporary is not None:
-            temporary.unlink(missing_ok=True)
-        client.close()
+            try:
+                temporary.unlink(missing_ok=True)
+            except BaseException as error:
+                cleanup_errors.append(("удалить временный файл", error))
+        try:
+            client.close()
+        except BaseException as error:
+            cleanup_errors.append(("закрыть S3-клиент", error))
+
+        if cleanup_errors:
+            if primary_error is not None:
+                for action, error in cleanup_errors:
+                    primary_error.add_note(
+                        f"Дополнительно не удалось {action}: {type(error).__name__}"
+                    )
+            else:
+                cleanup_error = cleanup_errors[0][1]
+                for action, error in cleanup_errors[1:]:
+                    cleanup_error.add_note(
+                        f"Дополнительно не удалось {action}: {type(error).__name__}"
+                    )
+                raise cleanup_error
     return result
