@@ -14,20 +14,44 @@ ACTIVE_STATUSES = frozenset({
 
 _SENSITIVE_ERROR_PATTERNS = (
     re.compile(
-        r"(?i)(aws_access_key_id|aws_secret_access_key|aws_session_token|"
-        r"access[_-]?token|secret[_-]?key|password)\s*([:=])\s*([^\s,;]+)"
+        r"(?i)(?<![\w-])(?P<key>(?P<key_quote>['\"]?)"
+        r"(?:aws_access_key_id|aws_secret_access_key|aws_session_token|"
+        r"access[_-]?token|secret[_-]?key|password)(?P=key_quote))"
+        r"(?P<separator>\s*[:=]\s*)"
+        r"(?P<value>\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|"
+        r"[^\s,;&}\]\)]+)"
+    ),
+    re.compile(
+        r"(?i)(?P<prefix>\bauthorization\s*:\s*(?:bearer|basic)\s+)"
+        r"(?P<value>\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|"
+        r"[^\s,;]+)"
     ),
     re.compile(r"(?i)(https?://)([^/@\s:]+):([^/@\s]+)@"),
     re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
 )
 
 
+def _redact_named_value(match):
+    """Сохранить форму key/value, заменив только чувствительное значение."""
+    value = match.group("value")
+    quote = value[0] if value[:1] in ("'", '"') else ""
+    return f"{match.group('key')}{match.group('separator')}{quote}<скрыто>{quote}"
+
+
+def _redact_authorization(match):
+    """Сохранить тип Authorization, не публикуя credential."""
+    value = match.group("value")
+    quote = value[0] if value[:1] in ("'", '"') else ""
+    return f"{match.group('prefix')}{quote}<скрыто>{quote}"
+
+
 def safe_error_text(error):
     """Вернуть полезное сообщение без распространённых форматов секретов."""
     text = str(error)
-    text = _SENSITIVE_ERROR_PATTERNS[0].sub(r"\1\2<скрыто>", text)
-    text = _SENSITIVE_ERROR_PATTERNS[1].sub(r"\1<скрыто>@", text)
-    text = _SENSITIVE_ERROR_PATTERNS[2].sub("<скрыто>", text)
+    text = _SENSITIVE_ERROR_PATTERNS[0].sub(_redact_named_value, text)
+    text = _SENSITIVE_ERROR_PATTERNS[1].sub(_redact_authorization, text)
+    text = _SENSITIVE_ERROR_PATTERNS[2].sub(r"\1<скрыто>@", text)
+    text = _SENSITIVE_ERROR_PATTERNS[3].sub("<скрыто>", text)
     return f"{type(error).__name__}: {text}"
 
 

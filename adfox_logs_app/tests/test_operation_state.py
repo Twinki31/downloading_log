@@ -2,7 +2,12 @@ import threading
 import time
 import unittest
 
-from operation_state import OperationCancelled, OperationController, OperationState
+from operation_state import (
+    OperationCancelled,
+    OperationController,
+    OperationState,
+    safe_error_text,
+)
 
 
 class Clock:
@@ -99,18 +104,76 @@ class OperationStateTests(unittest.TestCase):
         self.assertFalse(snapshot.active)
 
     def test_failure_redacts_credentials_from_error_text(self):
-        self.state.begin_download(None)
-        self.state.fail(RuntimeError(
-            "aws_secret_" "access_key=do-not-show "
-            "https://login:password@example.test "
-            "AKIA" "1234567890ABCDEF"
-        ))
-        message = self.state.snapshot().error
-        self.assertNotIn("do-not-show", message)
-        self.assertNotIn("login", message)
-        self.assertNotIn("password@example", message)
-        self.assertNotIn("AKIA" "1234567890ABCDEF", message)
-        self.assertEqual(message.count("<скрыто>"), 3)
+        fake_secret = "FAKE_CREDENTIAL_FOR_TESTS"
+        fake_aws_id = "AKIA" + "TESTONLY12345678"
+        cases = (
+            (
+                'request failed: {"aws_secret_access_key": "' + fake_secret + '"}',
+                (fake_secret,),
+                ("request failed", '"aws_secret_access_key": "<скрыто>"'),
+            ),
+            (
+                "request failed: {'password': '" + fake_secret + "'}",
+                (fake_secret,),
+                ("request failed", "'password': '<скрыто>'"),
+            ),
+            (
+                "connection failed; access_token   =   " + fake_secret,
+                (fake_secret,),
+                ("connection failed", "access_token   =   <скрыто>"),
+            ),
+            (
+                "upstream rejected request\nAuthorization: Bearer " + fake_secret,
+                (fake_secret,),
+                ("upstream rejected request", "Authorization: Bearer <скрыто>"),
+            ),
+            (
+                "proxy response: Authorization: Basic " + fake_secret,
+                (fake_secret,),
+                ("proxy response", "Authorization: Basic <скрыто>"),
+            ),
+            (
+                "request URL: https://example.test/log?access_token="
+                + fake_secret
+                + "&part=7",
+                (fake_secret,),
+                ("request URL", "&part=7"),
+            ),
+            (
+                "request URL: https://fake-user:" + fake_secret + "@example.test/log",
+                ("fake-user", fake_secret),
+                ("request URL", "example.test/log"),
+            ),
+            (
+                "download failed: password="
+                + fake_secret
+                + "; Authorization: Bearer "
+                + fake_secret
+                + "; id="
+                + fake_aws_id,
+                (fake_secret, fake_aws_id),
+                ("download failed", "id=<скрыто>"),
+            ),
+            (
+                "network timeout while reading response",
+                (),
+                ("network timeout", "reading response"),
+            ),
+            (
+                "password field is missing; tokenization failed",
+                (),
+                ("password field is missing", "tokenization failed"),
+            ),
+        )
+
+        for error_text, secrets, useful_parts in cases:
+            with self.subTest(error_text=error_text):
+                message = safe_error_text(RuntimeError(error_text))
+                self.assertNotIn(fake_secret, message)
+                for secret in secrets:
+                    self.assertNotIn(secret, message)
+                for useful_part in useful_parts:
+                    self.assertIn(useful_part, message)
 
     def test_cancel_before_finalization_wins_without_running_action(self):
         self.state.begin_filtering()
