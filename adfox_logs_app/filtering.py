@@ -22,7 +22,8 @@ class Rule:
         if self.operator == "Не пусто": return value != ""
         raise ValueError("Неизвестное условие")
 
-def filter_log(source, destination, rules, progress=None, checkpoint=None):
+def filter_log(source, destination, rules, progress=None, checkpoint=None,
+               finalize=None):
     source, destination = Path(source).expanduser(), Path(destination).expanduser()
     if source.resolve() == destination.resolve():
         raise ValueError("Исходный и итоговый файлы должны различаться")
@@ -37,7 +38,11 @@ def filter_log(source, destination, rules, progress=None, checkpoint=None):
     temporary = None
     checked = matched = malformed = 0
     preview = []
-    opener = gzip.open if source.suffix == ".gz" else open
+    # S3 downloads are filtered from an unpublished .part. Detect gzip by its
+    # signature as well as by the user-facing filename extension.
+    with source.open("rb") as probe:
+        is_gzip = source.suffix == ".gz" or probe.read(2) == b"\x1f\x8b"
+    opener = gzip.open if is_gzip else open
     try:
         with opener(source, "rt", encoding="utf-8-sig", newline="") as incoming:
             first = incoming.readline()
@@ -69,7 +74,11 @@ def filter_log(source, destination, rules, progress=None, checkpoint=None):
                         progress(checked, matched)
                 if checkpoint:
                     checkpoint()
-            os.replace(temporary, destination)
+            publish = lambda: os.replace(temporary, destination)
+            if finalize:
+                finalize(publish)
+            else:
+                publish()
             temporary = None
     finally:
         if temporary is not None:

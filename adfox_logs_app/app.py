@@ -233,7 +233,7 @@ def render_operation():
     if not snapshot.active:
         st.session_state.cancel_confirmation = False
 
-    if snapshot.active:
+    if snapshot.active and snapshot.status != "finalizing":
         if st.session_state.get("cancel_confirmation", False):
             st.warning("Подтвердите отмену. Будут удалены только временные файлы и файлы, созданные текущей операцией.")
             confirm, back = st.columns(2)
@@ -289,6 +289,8 @@ def render_operation():
         if snapshot.downloaded_bytes:
             st.caption(f"Средняя скорость скачивания: {format_speed(snapshot.speed_bytes_per_second)}")
         st.caption(f"Обработано строк: {snapshot.checked:,} · найдено: {snapshot.matched:,}")
+    elif snapshot.status == "finalizing":
+        st.info("Состояние: финализация… Файлы атомарно сохраняются, отмена уже недоступна.")
     elif snapshot.status == "cancelling":
         st.info("Состояние: отмена… Ожидается безопасная остановка и очистка файлов.")
     elif snapshot.status == "cancelled":

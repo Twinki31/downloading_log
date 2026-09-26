@@ -2,13 +2,14 @@
 
 from dataclasses import dataclass, replace
 import re
-from threading import Condition, Lock, Thread
+from threading import Condition, Lock, RLock, Thread
 import time
 from typing import Any, Callable
 
 
 ACTIVE_STATUSES = frozenset({
     "preparing", "downloading", "pausing", "paused", "filtering", "cancelling",
+    "finalizing",
 })
 
 _SENSITIVE_ERROR_PATTERNS = (
@@ -62,7 +63,9 @@ class OperationState:
     def __init__(self, clock=time.monotonic, speed_interval=0.5):
         self._clock = clock
         self._speed_interval = speed_interval
-        self._lock = Lock()
+        # RLock also makes deterministic tests possible when a mocked file
+        # operation requests cancellation from the worker thread itself.
+        self._lock = RLock()
         self._condition = Condition(self._lock)
         self._snapshot = OperationSnapshot()
         self._started_at = None
@@ -175,6 +178,11 @@ class OperationState:
     def request_cancel(self):
         """Идемпотентно запросить отмену и разбудить worker на паузе."""
         with self._condition:
+            # finalizing is the commit side of the commit/cancel boundary.
+            # Its short file operations run under this same lock, so a UI
+            # request either wins before the boundary or is rejected after it.
+            if self._snapshot.status == "finalizing":
+                return False
             if not self._snapshot.active:
                 return False
             first_request = not self._cancel_requested
@@ -212,9 +220,22 @@ class OperationState:
                 matched=max(self._snapshot.matched, int(matched)),
             )
 
-    def complete(self, result):
+    def finalize(self, action):
+        """Атомарно выбрать commit вместо отмены и выполнить быстрые действия.
+
+        ``action`` должен содержать только короткие файловые операции: публикацию
+        подготовленных файлов и/или удаление принадлежащего операции сырого файла.
+        Сеть, чтение и фильтрация выполняются до вызова этого метода.
+        """
         with self._condition:
             self._raise_if_cancelled()
+            self._transition("finalizing")
+            return action()
+
+    def complete(self, result):
+        with self._condition:
+            if self._snapshot.status != "finalizing":
+                self._raise_if_cancelled()
             self._transition("completed")
             self._snapshot = replace(self._snapshot, result=result, error=None)
 

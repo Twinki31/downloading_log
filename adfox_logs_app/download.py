@@ -25,7 +25,7 @@ def _object_identity(client, bucket, key):
 
 def download_log(date, hour, folder, endpoint, bucket, prefix, profile="", use_proxy=False,
                  progress=None, metadata=None, control=None,
-                 chunk_size=DEFAULT_CHUNK_SIZE):
+                 chunk_size=DEFAULT_CHUNK_SIZE, publish=True):
     """Скачать объект отдельными Range GET, безопасно прерываясь между порциями."""
     import boto3
     from botocore.config import Config
@@ -97,8 +97,18 @@ def download_log(date, hour, folder, endpoint, bucket, prefix, profile="", use_p
                 offset += len(data)
                 if progress:
                     progress(len(data))
-        os.replace(temporary, destination)
+        if publish:
+            if control:
+                control.finalize(lambda: os.replace(temporary, destination))
+            else:
+                os.replace(temporary, destination)
+            result = destination
+        else:
+            # Ownership of the completed staging file passes to the caller.
+            result = temporary
+            temporary = None
     finally:
-        temporary.unlink(missing_ok=True)
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
         client.close()
-    return destination
+    return result

@@ -8,7 +8,7 @@ import unittest
 import execution
 from execution import run_s3_operation
 from filtering import Rule
-from operation_state import OperationState
+from operation_state import OperationCancelled, OperationState
 
 
 class ExecutionTests(unittest.TestCase):
@@ -40,7 +40,7 @@ class ExecutionTests(unittest.TestCase):
             self.assertEqual(state.snapshot().percent, 100.0)
             self.assertEqual(
                 tuple(x for x in state.history() if x != "preparing"),
-                ("idle", "downloading", "filtering", "completed"),
+                ("idle", "downloading", "filtering", "finalizing", "completed"),
             )
             self.assertEqual(destination.read_text(encoding="utf-8"),
                              "banner_id\n208684\n")
@@ -58,6 +58,35 @@ class ExecutionTests(unittest.TestCase):
                 if isinstance(node, ast.ImportFrom) and node.module
             )
             self.assertNotIn("streamlit", imports)
+
+    def test_cancel_after_download_cleans_unpublished_archive(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive = root / "2026_09_24_12.tsv.gz"
+            destination = root / "result.tsv"
+            staged = root / "download.part"
+            state = OperationState()
+            state.prepare()
+
+            def downloader(*_args, metadata, control, **_kwargs):
+                metadata(10)
+                staged.write_bytes(b"downloaded")
+                control.request_cancel()
+                return staged
+
+            with self.assertRaises(OperationCancelled):
+                run_s3_operation(
+                    state, selected_date=date(2026, 9, 24), hour=12,
+                    folder=root, endpoint="https://s3.example", bucket="bucket",
+                    prefix="prefix", profile="", proxy=False, archive=archive,
+                    destination=destination,
+                    rules=(Rule("banner_id", "Одно из значений", ("208684",)),),
+                    keep_raw=True, downloader=downloader,
+                )
+
+            self.assertFalse(staged.exists())
+            self.assertFalse(archive.exists())
+            self.assertFalse(destination.exists())
 
 
 if __name__ == "__main__":

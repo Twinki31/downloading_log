@@ -1,11 +1,14 @@
 import gzip
+import os
 from pathlib import Path
 import tempfile
+import threading
 import unittest
+from unittest.mock import patch
 
 from filtering import Rule
 from operations import process_local_log, process_s3_log
-from operation_state import OperationCancelled
+from operation_state import OperationCancelled, OperationController
 
 
 class OperationTests(unittest.TestCase):
@@ -117,6 +120,117 @@ class OperationTests(unittest.TestCase):
                 lambda: self.archive, filterer=cancelled_filter,
             )
         self.assertEqual(self.archive.read_bytes(), b"previous archive")
+
+    def _assert_cancel_before_s3_commit_preserves_files(self, preexisting_archive):
+        self.destination.write_text("old result", encoding="utf-8")
+        if preexisting_archive:
+            self.archive.write_bytes(b"old archive")
+        staged = self.root / "download.part"
+        with gzip.open(staged, "wt", encoding="utf-8") as output:
+            output.write("banner_id\n208684\n")
+
+        controller = OperationController()
+        at_boundary = threading.Event()
+        release_boundary = threading.Event()
+
+        def operation(state):
+            state.begin_filtering()
+
+            def controlled_finalize(action):
+                at_boundary.set()
+                release_boundary.wait(1)
+                return state.finalize(action)
+
+            return process_s3_log(
+                self.archive, self.destination, self.rules, True,
+                lambda: staged, checkpoint=state.check_cancelled,
+                finalize=controlled_finalize,
+            )
+
+        self.assertTrue(controller.start(operation))
+        self.assertTrue(at_boundary.wait(1))
+        self.assertTrue(controller.cancel())
+        release_boundary.set()
+        controller.wait(1)
+
+        self.assertEqual(controller.snapshot().status, "cancelled")
+        self.assertEqual(self.destination.read_text(encoding="utf-8"), "old result")
+        if preexisting_archive:
+            self.assertEqual(self.archive.read_bytes(), b"old archive")
+        else:
+            self.assertFalse(self.archive.exists())
+        self.assertFalse(staged.exists())
+        self.assertFalse([
+            path for path in self.root.glob("*.part") if path != staged
+        ])
+
+    def test_cancel_before_s3_commit_preserves_new_archive_destination(self):
+        self._assert_cancel_before_s3_commit_preserves_files(False)
+
+    def test_cancel_before_s3_commit_preserves_preexisting_archive_destination(self):
+        self._assert_cancel_before_s3_commit_preserves_files(True)
+
+    def test_cancel_after_s3_commit_starts_is_rejected_and_raw_decision_finishes(self):
+        self.destination.write_text("old result", encoding="utf-8")
+        staged = self.root / "download.part"
+        with gzip.open(staged, "wt", encoding="utf-8") as output:
+            output.write("banner_id\n208684\n")
+        controller = OperationController()
+        real_replace = os.replace
+        cancel_results = []
+
+        def replace_result_and_cancel(source, destination):
+            cancel_results.append(controller.cancel())
+            real_replace(source, destination)
+
+        def operation(state):
+            state.begin_filtering()
+            return process_s3_log(
+                self.archive, self.destination, self.rules, False,
+                lambda: staged, checkpoint=state.check_cancelled,
+                finalize=state.finalize,
+            )
+
+        with patch("filtering.os.replace", side_effect=replace_result_and_cancel):
+            self.assertTrue(controller.start(operation))
+            controller.wait(1)
+
+        self.assertEqual(cancel_results, [False])
+        self.assertEqual(controller.snapshot().status, "completed")
+        self.assertEqual(self.destination.read_text(encoding="utf-8"),
+                         "banner_id\n208684\n")
+        self.assertFalse(self.archive.exists())
+        self.assertFalse(staged.exists())
+
+    def test_cancel_during_archive_publish_is_rejected_and_archive_is_committed(self):
+        staged = self.root / "download.part"
+        with gzip.open(staged, "wt", encoding="utf-8") as output:
+            output.write("banner_id\n208684\n")
+        controller = OperationController()
+        real_replace = os.replace
+        cancel_results = []
+
+        def replace_archive_and_cancel(source, destination):
+            cancel_results.append(controller.cancel())
+            real_replace(source, destination)
+
+        def operation(state):
+            state.begin_filtering()
+            return process_s3_log(
+                self.archive, self.destination, self.rules, True,
+                lambda: staged, checkpoint=state.check_cancelled,
+                finalize=state.finalize,
+            )
+
+        with patch("operations.os.replace", side_effect=replace_archive_and_cancel):
+            self.assertTrue(controller.start(operation))
+            controller.wait(1)
+
+        self.assertEqual(cancel_results, [False, False])
+        self.assertEqual(controller.snapshot().status, "completed")
+        with gzip.open(self.archive, "rt", encoding="utf-8") as incoming:
+            self.assertEqual(incoming.read(), "banner_id\n208684\n")
+        self.assertFalse(staged.exists())
 
 
 if __name__ == "__main__":

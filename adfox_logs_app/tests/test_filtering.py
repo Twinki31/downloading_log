@@ -1,10 +1,11 @@
 import gzip
 from pathlib import Path
 import tempfile
+import os
 import unittest
 from unittest.mock import patch
 from filtering import Rule, filter_log
-from operation_state import OperationCancelled
+from operation_state import OperationCancelled, OperationController
 
 class Tests(unittest.TestCase):
     def setUp(self):
@@ -73,4 +74,34 @@ class Tests(unittest.TestCase):
                     [Rule('banner_id', 'Одно из значений', ('208684',))],
                 )
         self.assertEqual(self.target.read_text(encoding='utf-8'), 'old result')
+        self.assertFalse(list(self.root.glob('*.part')))
+
+    def test_cancel_requested_inside_replace_finishes_commit_as_completed(self):
+        self.write('banner_id\n208684\n')
+        self.target.write_text('old result', encoding='utf-8')
+        controller = OperationController()
+        real_replace = os.replace
+        cancel_results = []
+
+        def replace_and_cancel(source, destination):
+            cancel_results.append(controller.cancel())
+            real_replace(source, destination)
+
+        def operation(state):
+            state.begin_filtering()
+            return filter_log(
+                self.source, self.target,
+                [Rule('banner_id', 'Одно из значений', ('208684',))],
+                checkpoint=state.check_cancelled,
+                finalize=state.finalize,
+            )
+
+        with patch('filtering.os.replace', side_effect=replace_and_cancel):
+            self.assertTrue(controller.start(operation))
+            controller.wait(1)
+
+        self.assertEqual(cancel_results, [False])
+        self.assertEqual(controller.snapshot().status, 'completed')
+        self.assertEqual(self.target.read_text(encoding='utf-8'),
+                         'banner_id\n208684\n')
         self.assertFalse(list(self.root.glob('*.part')))

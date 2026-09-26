@@ -2,7 +2,7 @@ import threading
 import time
 import unittest
 
-from operation_state import OperationController, OperationState
+from operation_state import OperationCancelled, OperationController, OperationState
 
 
 class Clock:
@@ -111,6 +111,33 @@ class OperationStateTests(unittest.TestCase):
         self.assertNotIn("password@example", message)
         self.assertNotIn("AKIA" "1234567890ABCDEF", message)
         self.assertEqual(message.count("<скрыто>"), 3)
+
+    def test_cancel_before_finalization_wins_without_running_action(self):
+        self.state.begin_filtering()
+        self.assertTrue(self.state.request_cancel())
+        called = []
+
+        with self.assertRaises(OperationCancelled):
+            self.state.finalize(lambda: called.append(True))
+
+        self.assertEqual(called, [])
+
+    def test_cancel_during_finalization_is_rejected(self):
+        self.state.begin_filtering()
+        cancel_results = []
+
+        def action():
+            cancel_results.append(self.state.request_cancel())
+
+        self.state.finalize(action)
+        self.state.complete("done")
+
+        self.assertEqual(cancel_results, [False])
+        self.assertEqual(self.state.snapshot().status, "completed")
+        self.assertEqual(
+            self.state.history(),
+            ("idle", "preparing", "filtering", "finalizing", "completed"),
+        )
 
 
 class OperationControllerTests(unittest.TestCase):
