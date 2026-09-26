@@ -152,8 +152,20 @@ def normalise_state(raw, defaults, fields, operators, recover=False):
     result = deepcopy(defaults)
     warnings = []
     version = raw.get("schema_version", 0)
-    if not isinstance(version, int) or version > SCHEMA_VERSION:
-        warnings.append("версия файла настроек новее поддерживаемой")
+    if not isinstance(version, int) or isinstance(version, bool):
+        if recover:
+            warnings.append("версия файла настроек некорректна")
+        else:
+            raise ValueError("Некорректная версия файла настроек")
+    elif version > SCHEMA_VERSION:
+        # Более новая схема может содержать неизвестные нам данные. Используем
+        # ту же безопасную политику, что и при автоматической загрузке state:
+        # берём только известные корректные поля, остальные оставляем default.
+        recover = True
+        warnings.append(
+            "версия файла настроек новее поддерживаемой; "
+            "часть полей могла не восстановиться"
+        )
 
     if "endpoint" in raw:
         try:

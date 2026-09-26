@@ -90,6 +90,86 @@ class AppUiTests(unittest.TestCase):
         self.assertEqual(app.date_input[0].value, date(2020, 7, 8))
         self.assertEqual(app.number_input[0].value, 6)
 
+    def test_newer_json_import_recovers_known_fields_and_warns_once(self):
+        app = self.open_app()
+        imported = dict(app.session_state["settings"])
+        imported.update({
+            "schema_version": 999,
+            "folder": str(Path(self.tmp.name) / "known"),
+            "profile": "known-profile",
+            "proxy": "not-a-boolean",
+            "future_setting": {"enabled": True},
+        })
+        app.file_uploader[0].set_value(
+            ("settings.json", json.dumps(imported).encode("utf-8"), "application/json")
+        ).run()
+        self.button(app, "Применить настройки").click().run()
+
+        warnings = "\n".join(item.value for item in app.warning)
+        self.assertIn("версия файла настроек новее поддерживаемой", warnings)
+        self.assertIn("часть полей могла не восстановиться", warnings)
+        self.assertEqual(app.text_input(key="folder").value,
+                         str(Path(self.tmp.name) / "known"))
+        self.assertEqual(app.text_input(key="profile").value, "known-profile")
+        self.assertFalse(app.checkbox(key="proxy").value)
+        self.assertNotIn("future_setting", app.session_state["settings"])
+        self.assertEqual(app.session_state["settings"]["schema_version"], 1)
+        self.assertEqual(
+            json.loads(Path(self.state_file).read_text(encoding="utf-8"))["schema_version"],
+            1,
+        )
+
+        app.run()
+        warnings = "\n".join(item.value for item in app.warning)
+        self.assertNotIn("версия файла настроек новее поддерживаемой", warnings)
+
+    def test_legacy_json_import_has_no_schema_warning(self):
+        app = self.open_app()
+        imported = {
+            "folder": str(Path(self.tmp.name) / "legacy"),
+            "rules": [
+                {"field": "banner_id", "operator": "Одно из значений", "text": "42"}
+            ],
+        }
+        app.file_uploader[0].set_value(
+            ("settings.json", json.dumps(imported).encode("utf-8"), "application/json")
+        ).run()
+        self.button(app, "Применить настройки").click().run()
+
+        self.assertEqual(app.text_input(key="folder").value,
+                         str(Path(self.tmp.name) / "legacy"))
+        self.assertEqual(app.text_area[0].value, "42")
+        self.assertNotIn(
+            "версия файла настроек",
+            "\n".join(item.value for item in app.warning),
+        )
+
+    def test_invalid_import_does_not_change_current_settings(self):
+        app = self.open_app()
+        original_folder = app.text_input(key="folder").value
+        imported = dict(app.session_state["settings"])
+        imported["folder"] = ["not", "a", "string"]
+        app.file_uploader[0].set_value(
+            ("settings.json", json.dumps(imported).encode("utf-8"), "application/json")
+        ).run()
+        self.button(app, "Применить настройки").click().run()
+
+        self.assertTrue(any("Не удалось прочитать настройки" in item.value
+                            for item in app.error))
+        self.assertEqual(app.text_input(key="folder").value, original_folder)
+
+    def test_malformed_json_import_does_not_change_current_settings(self):
+        app = self.open_app()
+        original_settings = dict(app.session_state["settings"])
+        app.file_uploader[0].set_value(
+            ("settings.json", b'{"folder": ', "application/json")
+        ).run()
+        self.button(app, "Применить настройки").click().run()
+
+        self.assertTrue(any("Не удалось прочитать настройки" in item.value
+                            for item in app.error))
+        self.assertEqual(app.session_state["settings"], original_settings)
+
     def test_credentialed_endpoint_never_reaches_state_ui_or_export(self):
         password = "FIXTURE_PASSWORD_8d37"
         captured_exports = []

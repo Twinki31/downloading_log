@@ -182,6 +182,30 @@ class StateTests(unittest.TestCase):
         state, warning = self.load()
         self.assertEqual(state["folder"], "/known")
         self.assertIn("новее", warning)
+        self.assertIn("часть полей могла не восстановиться", warning)
+
+    def test_newer_import_recovers_only_known_valid_fields(self):
+        raw = {
+            "schema_version": 999,
+            "folder": "/known",
+            "proxy": "not-a-boolean",
+            "future": {"setting": True},
+        }
+
+        state, warning = normalise_state(raw, self.defaults, FIELDS, OPERATORS)
+
+        self.assertEqual(state["folder"], "/known")
+        self.assertEqual(state["proxy"], self.defaults["proxy"])
+        self.assertNotIn("future", state)
+        self.assertIn("новее", warning)
+        self.assertIn("часть полей могла не восстановиться", warning)
+
+    def test_import_rejects_invalid_schema_version_type(self):
+        with self.assertRaises(ValueError):
+            normalise_state(
+                {"schema_version": "999", "folder": "/changed"},
+                self.defaults, FIELDS, OPERATORS,
+            )
 
     def test_atomic_write_removes_part_after_replace_error(self):
         self.path.parent.mkdir(parents=True)

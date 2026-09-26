@@ -53,8 +53,9 @@ if "settings" not in st.session_state:
 settings = st.session_state.settings
 with st.sidebar:
     st.header("Настройки")
-    if st.session_state.get("state_warning"):
-        st.warning(st.session_state.pop("state_warning"))
+    pending_state_warning = st.session_state.pop("state_warning", None)
+    if pending_state_warning:
+        st.warning(pending_state_warning)
     uploaded = st.file_uploader("Загрузить настройки JSON", type="json")
     if st.button("Применить настройки", disabled=uploaded is None):
         try:
