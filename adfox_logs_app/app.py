@@ -313,15 +313,18 @@ def render_operation():
             st.caption(f"Текущая скорость: {format_speed(snapshot.speed_bytes_per_second)}")
     elif snapshot.status == "filtering":
         st.info("Состояние: фильтрация")
-        if snapshot.total_bytes is not None:
-            st.progress(
-                1.0,
-                text=(f"Скачивание завершено: {format_bytes(snapshot.downloaded_bytes)} из "
-                      f"{format_bytes(snapshot.total_bytes)} · 100%"),
-            )
-        else:
-            st.caption(f"Скачивание завершено: получено {format_bytes(snapshot.downloaded_bytes)}")
-        if snapshot.downloaded_bytes:
+        if snapshot.operation_source == "s3":
+            if snapshot.total_bytes is not None:
+                download_text = (
+                    f"Скачивание завершено: {format_bytes(snapshot.downloaded_bytes)} из "
+                    f"{format_bytes(snapshot.total_bytes)} · 100%"
+                )
+            else:
+                download_text = (
+                    f"Скачивание завершено: получено "
+                    f"{format_bytes(snapshot.downloaded_bytes)} · 100%"
+                )
+            st.progress(1.0, text=download_text)
             st.caption(f"Средняя скорость скачивания: {format_speed(snapshot.speed_bytes_per_second)}")
         st.caption(f"Обработано строк: {snapshot.checked:,} · найдено: {snapshot.matched:,}")
     elif snapshot.status == "finalizing":
@@ -341,7 +344,7 @@ def render_operation():
         result = payload["filter_result"]
         st.success(f"Состояние: готово. Результат: {payload['path']}")
         st.caption(payload["archive_note"])
-        if snapshot.downloaded_bytes:
+        if snapshot.operation_source == "s3":
             st.caption(f"Средняя скорость скачивания: {format_speed(snapshot.speed_bytes_per_second)}")
         a, b, c = st.columns(3)
         a.metric("Обработано строк", result["checked"])

@@ -34,7 +34,7 @@ def _run_reserved_s3_operation(state, *, selected_date, hour, folder, endpoint,
             replace=replace,
         )
         try:
-            state.begin_filtering()
+            state.begin_filtering(operation_source="s3")
         except Exception:
             source_path = Path(source).expanduser()
             archive_path = Path(archive).expanduser()
@@ -70,7 +70,7 @@ def _run_reserved_s3_operation(state, *, selected_date, hour, folder, endpoint,
 def run_local_operation(state, *, source, destination, rules, replace):
     """Отфильтровать локальный файл в том же worker."""
     with reserve_paths((destination,)):
-        state.begin_filtering()
+        state.begin_filtering(operation_source="local")
         result = process_local_log(
             source, destination, rules, state.update_filtering,
             state.check_cancelled, state.finalize, replace=replace,

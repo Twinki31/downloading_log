@@ -313,6 +313,45 @@ class AppUiTests(unittest.TestCase):
                      if button.label == "Скачать и отфильтровать")
         self.assertFalse(start.disabled)
 
+    def test_active_local_filtering_does_not_show_download_summary(self):
+        state = OperationState()
+        self.assertTrue(state.prepare())
+        state.begin_filtering(operation_source="local")
+        state.update_filtering(12, 3)
+
+        app = self.open_app()
+        app.session_state["operation_controller"] = OperationController(state)
+        app.run()
+
+        info = [item.value for item in app.info]
+        captions = [item.value for item in app.caption]
+        self.assertIn("Состояние: фильтрация", info)
+        self.assertIn("Обработано строк: 12 · найдено: 3", captions)
+        self.assertFalse(app.get("progress"))
+        self.assertFalse(any("Скачивание завершено" in text for text in captions))
+        self.assertFalse(any("Средняя скорость скачивания" in text for text in captions))
+
+    def test_active_s3_filtering_keeps_download_summary_for_unknown_size(self):
+        state = OperationState()
+        self.assertTrue(state.prepare())
+        state.begin_download(None)
+        state.begin_filtering()
+
+        app = self.open_app()
+        app.session_state["operation_controller"] = OperationController(state)
+        app.run()
+
+        progress = app.get("progress")
+        self.assertEqual(len(progress), 1)
+        self.assertEqual(
+            progress[0].proto.text,
+            "Скачивание завершено: получено 0.0 КБ · 100%",
+        )
+        self.assertIn(
+            "Средняя скорость скачивания: 0.0 КБ/с",
+            [item.value for item in app.caption],
+        )
+
     def test_failed_operation_unlocks_controls_and_shows_error(self):
         app = self.open_app()
         controller = app.session_state["operation_controller"]

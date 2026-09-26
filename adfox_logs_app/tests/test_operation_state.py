@@ -119,6 +119,29 @@ class OperationStateTests(unittest.TestCase):
         )
         self.assertFalse(self.state.snapshot().active)
 
+    def test_operation_source_is_explicit_and_resets_between_operations(self):
+        self.state.begin_download(None)
+        self.assertEqual(self.state.snapshot().operation_source, "s3")
+        self.state.fail(OSError("network failed"))
+
+        self.assertTrue(self.state.prepare())
+        self.assertIsNone(self.state.snapshot().operation_source)
+        self.state.begin_filtering(operation_source="local")
+        self.assertEqual(self.state.snapshot().operation_source, "local")
+        self.state.complete("done")
+
+        self.assertTrue(self.state.prepare())
+        self.assertIsNone(self.state.snapshot().operation_source)
+
+    def test_cancel_clears_operation_source_before_next_operation(self):
+        self.state.begin_filtering(operation_source="local")
+        self.assertTrue(self.state.request_cancel())
+        self.state.cancelled()
+        self.assertIsNone(self.state.snapshot().operation_source)
+
+        self.assertTrue(self.state.prepare())
+        self.assertIsNone(self.state.snapshot().operation_source)
+
     def test_failure_keeps_error_text(self):
         self.state.begin_download(None)
         self.state.fail(OSError("network failed"))

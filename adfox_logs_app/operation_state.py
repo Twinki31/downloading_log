@@ -62,6 +62,7 @@ class OperationCancelled(Exception):
 @dataclass(frozen=True)
 class OperationSnapshot:
     status: str = "idle"
+    operation_source: str | None = None
     downloaded_bytes: int = 0
     total_bytes: int | None = None
     speed_bytes_per_second: float = 0.0
@@ -131,7 +132,8 @@ class OperationState:
             self._raise_if_cancelled()
             self._transition("downloading")
             self._snapshot = replace(
-                self._snapshot, total_bytes=total, downloaded_bytes=0,
+                self._snapshot, operation_source="s3", total_bytes=total,
+                downloaded_bytes=0,
                 speed_bytes_per_second=0.0,
             )
             self._started_at = self._sample_at = now
@@ -222,10 +224,13 @@ class OperationState:
             self._condition.notify_all()
             return first_request
 
-    def begin_filtering(self):
+    def begin_filtering(self, operation_source=None):
+        if operation_source not in (None, "s3", "local"):
+            raise ValueError("Неизвестный источник операции")
         now = self._clock()
         with self._condition:
             self._raise_if_cancelled()
+            source = operation_source or self._snapshot.operation_source
             downloaded = self._snapshot.downloaded_bytes
             total = self._snapshot.total_bytes
             if self._snapshot.status == "downloading" and total is not None:
@@ -238,7 +243,8 @@ class OperationState:
                 speed = downloaded / active_elapsed
             self._transition("filtering")
             self._snapshot = replace(
-                self._snapshot, downloaded_bytes=downloaded,
+                self._snapshot, operation_source=source,
+                downloaded_bytes=downloaded,
                 speed_bytes_per_second=max(0.0, speed),
             )
 
