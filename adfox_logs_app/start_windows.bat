@@ -11,24 +11,30 @@ if errorlevel 1 (
     exit /b 1
 )
 
+py -3 launcher_env.py check-python
+if errorlevel 1 (
+    echo Install Python 3.11 or newer, then run this file again.
+    pause
+    exit /b 1
+)
+
 if not exist ".venv\Scripts\python.exe" (
     echo Creating the project environment...
     py -3 -m venv .venv
     if errorlevel 1 goto :failed
 )
 
-".venv\Scripts\python.exe" -c "import sys; raise SystemExit(sys.version_info < (3, 11))"
+".venv\Scripts\python.exe" launcher_env.py check-python
 if errorlevel 1 (
-    echo Python 3.11 or newer is required. Install it, then run this file again.
+    echo The existing .venv uses an old Python. Delete .venv and run this file again.
     pause
     exit /b 1
 )
 
-".venv\Scripts\python.exe" -c "import streamlit, boto3" >nul 2>&1
+".venv\Scripts\python.exe" launcher_env.py sync requirements.txt ".venv\requirements.sha256"
 if errorlevel 1 (
-    echo Installing the required libraries. This needs an internet connection...
-    ".venv\Scripts\python.exe" -m pip install -r requirements.txt
-    if errorlevel 1 goto :failed
+    echo The app could not start because its libraries could not be installed.
+    goto :failed
 )
 
 echo Starting the app. Keep this window open while using it.
