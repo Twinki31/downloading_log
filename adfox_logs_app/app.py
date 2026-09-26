@@ -4,8 +4,9 @@ from functools import partial
 from pathlib import Path
 import json
 import streamlit as st
-from app_state import (MAX_RULES, default_state, load_state, new_rule,
-                       normalise_state, remove_rule, save_state, state_path)
+from app_state import (EndpointValidationError, MAX_RULES, default_state, load_state,
+                       new_rule, normalise_s3_endpoint, normalise_state, remove_rule,
+                       save_state, state_path)
 from fields import FIELDS, label
 from filtering import OPERATORS, Rule
 from execution import run_local_operation, run_s3_operation
@@ -36,6 +37,15 @@ def clear_setting_widgets():
             del st.session_state[key]
 
 
+def normalise_endpoint_widget():
+    """Удалить опасное значение до построения и сохранения настроек."""
+    try:
+        st.session_state.endpoint = normalise_s3_endpoint(st.session_state.endpoint)
+    except EndpointValidationError as error:
+        st.session_state.endpoint = DEFAULTS["endpoint"]
+        st.session_state.endpoint_warning = str(error)
+
+
 if "settings" not in st.session_state:
     st.session_state.settings, st.session_state.state_warning = load_state(
         STATE_FILE, DEFAULTS, FIELDS, OPERATORS
@@ -49,13 +59,14 @@ with st.sidebar:
     if st.button("Применить настройки", disabled=uploaded is None):
         try:
             data = json.load(uploaded)
-            merged, _ = normalise_state(data, DEFAULTS, FIELDS, OPERATORS)
+            merged, warning = normalise_state(data, DEFAULTS, FIELDS, OPERATORS)
             clear_setting_widgets()
             # Явно восстанавливаем типы значений виджетов из JSON. Иначе
             # Streamlit может сохранить их прежнее состояние между rerun.
             st.session_state.selected_date = date.fromisoformat(merged["selected_date"])
             st.session_state.hour = merged["hour"]
             st.session_state.settings = merged
+            st.session_state.state_warning = warning
             save_state(STATE_FILE, merged)
             st.rerun()
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
@@ -65,7 +76,15 @@ with st.sidebar:
         disabled=operation_active,
     )
     with st.expander("Подключение к S3"):
-        endpoint = st.text_input("Адрес S3", settings["endpoint"], key="endpoint")
+        endpoint_default = {} if "endpoint" in st.session_state else {
+            "value": settings["endpoint"]
+        }
+        endpoint = st.text_input(
+            "Адрес S3", key="endpoint", **endpoint_default,
+            on_change=normalise_endpoint_widget,
+        )
+        if st.session_state.get("endpoint_warning"):
+            st.warning(st.session_state.pop("endpoint_warning"))
         bucket = st.text_input("Bucket", settings["bucket"], key="bucket")
         prefix = st.text_input("Папка в bucket", settings["prefix"], key="prefix")
         profile = st.text_input("AWS-профиль (пусто — стандартный)", settings["profile"], key="profile")
@@ -145,8 +164,15 @@ keep_raw = st.checkbox(
 )
 if mode != "Скачать из S3":
     st.caption("Локальный исходный файл никогда не изменяется и не удаляется.")
+try:
+    safe_endpoint = normalise_s3_endpoint(endpoint)
+except EndpointValidationError as error:
+    # Защита на случай запуска без callback (например, нестандартный клиент).
+    safe_endpoint = DEFAULTS["endpoint"]
+    st.warning(str(error))
+
 export = dict(
-    schema_version=settings["schema_version"], endpoint=endpoint, bucket=bucket,
+    schema_version=settings["schema_version"], endpoint=safe_endpoint, bucket=bucket,
     prefix=prefix, profile=profile, proxy=proxy, keep_raw=keep_raw, folder=folder, mode=mode,
     local_path=st.session_state.get("local_path", settings["local_path"]),
     output_name=output_name,
@@ -161,7 +187,7 @@ elif add_rule:
 try:
     save_state(STATE_FILE, export)
     st.session_state.settings = export
-except OSError as error:
+except (OSError, ValueError) as error:
     st.warning(f"Не удалось автоматически сохранить рабочее состояние: {error}")
 
 if delete_id is not None or add_rule:
@@ -192,7 +218,7 @@ if st.button(
                 raise ValueError("Архив уже существует. Выберите «Локальный файл» или разрешите замену")
             operation = partial(
                 run_s3_operation, selected_date=selected_date, hour=int(hour), folder=folder,
-                endpoint=endpoint, bucket=bucket, prefix=prefix, profile=profile,
+                endpoint=safe_endpoint, bucket=bucket, prefix=prefix, profile=profile,
                 proxy=proxy, archive=archive, destination=destination,
                 rules=tuple(rules), keep_raw=keep_raw, replace=replace,
             )

@@ -5,7 +5,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from app_state import default_state, load_state, normalise_state, remove_rule, save_state
+from app_state import (default_state, load_state, normalise_s3_endpoint,
+                       normalise_state, remove_rule, save_state)
 from fields import FIELDS
 from filtering import OPERATORS
 
@@ -36,6 +37,74 @@ class StateTests(unittest.TestCase):
         loaded, warning = self.load()
         self.assertEqual(loaded, state)
         self.assertIsNone(warning)
+
+    def test_valid_s3_endpoints_are_normalised(self):
+        cases = {
+            "https://s3-private.mds.yandex.net": "https://s3-private.mds.yandex.net",
+            "HTTP://S3.EXAMPLE:9000/api/v1/": "http://s3.example:9000/api/v1/",
+            "localhost:9000/minio": "https://localhost:9000/minio",
+            "127.0.0.1:9000": "https://127.0.0.1:9000",
+            "http://[::1]:9000/storage": "http://[::1]:9000/storage",
+        }
+        for raw, expected in cases.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(normalise_s3_endpoint(raw), expected)
+
+    def test_s3_endpoint_rejects_userinfo_without_echoing_it(self):
+        password = "FIXTURE_PASSWORD_8d37"
+        for endpoint in (
+            f"https://login:{password}@s3.example",
+            f"login:{password}@localhost:9000/path",
+            "https://login@s3.example",
+            "https://@s3.example",
+        ):
+            with self.subTest(endpoint=endpoint), self.assertRaises(ValueError) as caught:
+                normalise_s3_endpoint(endpoint)
+            self.assertIn("AWS-профиль", str(caught.exception))
+            self.assertNotIn(password, str(caught.exception))
+
+    def test_s3_endpoint_rejects_unsupported_or_ambiguous_parts(self):
+        for endpoint in (
+            "ftp://s3.example",
+            "//s3.example",
+            "https:s3.example",
+            "https://s3.example/path?region=test",
+            "https://s3.example/path#fragment",
+            "https://s3.example:wrong",
+            "https://s3.example:0",
+            "https://[::1",
+            "",
+        ):
+            with self.subTest(endpoint=endpoint), self.assertRaises(ValueError):
+                normalise_s3_endpoint(endpoint)
+
+    def test_old_state_with_userinfo_recovers_default_endpoint(self):
+        password = "FIXTURE_PASSWORD_8d37"
+        raw = default_state()
+        raw["endpoint"] = f"https://login:{password}@s3.example"
+        self.path.parent.mkdir(parents=True)
+        self.path.write_text(json.dumps(raw), encoding="utf-8")
+
+        state, warning = self.load()
+
+        self.assertEqual(state["endpoint"], self.defaults["endpoint"])
+        self.assertIn("AWS-профиль", warning)
+        self.assertNotIn(password, repr((state, warning)))
+
+    def test_import_with_userinfo_resets_only_endpoint(self):
+        raw = {"endpoint": "https://login:secret@s3.example", "folder": "/safe"}
+        state, warning = normalise_state(raw, self.defaults, FIELDS, OPERATORS)
+        self.assertEqual(state["endpoint"], self.defaults["endpoint"])
+        self.assertEqual(state["folder"], "/safe")
+        self.assertIn("AWS-профиль", warning)
+
+    def test_save_state_refuses_endpoint_with_userinfo(self):
+        password = "FIXTURE_PASSWORD_8d37"
+        state = default_state()
+        state["endpoint"] = f"https://login:{password}@s3.example"
+        with self.assertRaises(ValueError):
+            save_state(self.path, state)
+        self.assertFalse(self.path.exists())
 
     def test_unicode_and_multiline_filter_values(self):
         state = default_state()

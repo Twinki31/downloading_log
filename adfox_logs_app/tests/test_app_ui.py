@@ -8,6 +8,7 @@ import time
 import unittest
 from unittest.mock import patch
 
+import streamlit as st
 from streamlit.testing.v1 import AppTest
 
 
@@ -88,6 +89,58 @@ class AppUiTests(unittest.TestCase):
 
         self.assertEqual(app.date_input[0].value, date(2020, 7, 8))
         self.assertEqual(app.number_input[0].value, 6)
+
+    def test_credentialed_endpoint_never_reaches_state_ui_or_export(self):
+        password = "FIXTURE_PASSWORD_8d37"
+        captured_exports = []
+        original_download_button = st.download_button
+
+        def capture_download(*args, **kwargs):
+            captured_exports.append(args[1] if len(args) > 1 else kwargs["data"])
+            return original_download_button(*args, **kwargs)
+
+        app = self.open_app()
+        with patch.object(st, "download_button", side_effect=capture_download):
+            app.text_input(key="endpoint").set_value(
+                f"https://login:{password}@s3.example"
+            ).run()
+
+        saved = Path(self.state_file).read_text(encoding="utf-8")
+        exported = json.loads(captured_exports[-1])
+        self.assertEqual(app.text_input(key="endpoint").value,
+                         app.session_state["settings"]["endpoint"])
+        self.assertEqual(exported["endpoint"], app.session_state["settings"]["endpoint"])
+        self.assertIn("AWS-профиль", "\n".join(item.value for item in app.warning))
+        self.assertNotIn(password, saved)
+        self.assertNotIn(password, captured_exports[-1])
+        self.assertNotIn(password, str(app))
+
+    def test_imported_credentialed_endpoint_is_reset_before_export(self):
+        password = "FIXTURE_PASSWORD_8d37"
+        app = self.open_app()
+        imported = dict(app.session_state["settings"])
+        imported["endpoint"] = f"https://login:{password}@s3.example"
+        app.file_uploader[0].set_value(
+            ("settings.json", json.dumps(imported).encode("utf-8"), "application/json")
+        ).run()
+
+        captured_exports = []
+        original_download_button = st.download_button
+
+        def capture_download(*args, **kwargs):
+            captured_exports.append(args[1] if len(args) > 1 else kwargs["data"])
+            return original_download_button(*args, **kwargs)
+
+        with patch.object(st, "download_button", side_effect=capture_download):
+            self.button(app, "Применить настройки").click().run()
+
+        exported = json.loads(captured_exports[-1])
+        self.assertEqual(exported["endpoint"], app.text_input(key="endpoint").value)
+        self.assertNotIn("@", exported["endpoint"])
+        self.assertIn("AWS-профиль", "\n".join(item.value for item in app.warning))
+        self.assertNotIn(password, Path(self.state_file).read_text(encoding="utf-8"))
+        self.assertNotIn(password, captured_exports[-1])
+        self.assertNotIn(password, str(app))
 
     def test_past_date_allows_any_hour(self):
         app = self.open_app()

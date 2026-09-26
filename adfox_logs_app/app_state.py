@@ -6,12 +6,78 @@ import json
 import os
 from pathlib import Path
 import tempfile
+from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
 
 SCHEMA_VERSION = 1
 MAX_RULES = 30
 MIN_SELECTED_DATE = date(2020, 1, 1)
+ENDPOINT_USERINFO_MESSAGE = (
+    "Адрес S3 не должен содержать имя пользователя, пароль или другие учётные данные. "
+    "Доступ нужно настраивать через AWS-профиль, а не помещать учётные данные в адрес."
+)
+ENDPOINT_FORMAT_MESSAGE = (
+    "Укажите корректный адрес S3: hostname, при необходимости порт и path; "
+    "разрешены только http и https без query и fragment."
+)
+
+
+class EndpointValidationError(ValueError):
+    """Безопасная ошибка endpoint, не содержащая исходное значение."""
+
+    def __init__(self, message, *, has_userinfo=False):
+        super().__init__(message)
+        self.has_userinfo = has_userinfo
+
+
+def normalise_s3_endpoint(value):
+    """Проверить S3 endpoint и вернуть однозначный URL без учётных данных.
+
+    Адрес без схемы считается HTTPS. Разрешены hostname (включая localhost),
+    IPv4/IPv6, порт и абсолютный path. Query и fragment не являются частью
+    endpoint и поэтому отклоняются.
+    """
+    if not isinstance(value, str):
+        raise EndpointValidationError(ENDPOINT_FORMAT_MESSAGE)
+    endpoint = value.strip()
+    if not endpoint or any(character.isspace() for character in endpoint) or "\\" in endpoint:
+        raise EndpointValidationError(ENDPOINT_FORMAT_MESSAGE)
+
+    try:
+        parsed = urlsplit(endpoint)
+        scheme = parsed.scheme.lower()
+        if scheme in ("http", "https"):
+            if not parsed.netloc:
+                raise EndpointValidationError(ENDPOINT_FORMAT_MESSAGE)
+        elif parsed.netloc:
+            # В том числе отклоняем protocol-relative форму //host: политика
+            # требует либо явную схему, либо адрес, начинающийся с hostname.
+            raise EndpointValidationError(ENDPOINT_FORMAT_MESSAGE)
+        else:
+            # Повторный разбор с authority-маркером даёт urllib.parse, а не
+            # самодельному коду, отделить hostname, порт и возможный userinfo.
+            parsed = urlsplit(f"//{endpoint}")
+            scheme = "https"
+        username = parsed.username
+        password = parsed.password
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        raise EndpointValidationError(ENDPOINT_FORMAT_MESSAGE) from None
+
+    if username is not None or password is not None:
+        raise EndpointValidationError(ENDPOINT_USERINFO_MESSAGE, has_userinfo=True)
+    if not hostname:
+        raise EndpointValidationError(ENDPOINT_FORMAT_MESSAGE)
+    if parsed.query or parsed.fragment or port == 0:
+        raise EndpointValidationError(ENDPOINT_FORMAT_MESSAGE)
+
+    # urlsplit проверил скобки IPv6 и диапазон порта. Собираем netloc заново,
+    # чтобы в нормализованное значение принципиально не мог попасть userinfo.
+    host = f"[{hostname}]" if ":" in hostname else hostname
+    netloc = host + (f":{port}" if port is not None else "")
+    return urlunsplit((scheme, netloc, parsed.path, "", ""))
 
 
 def new_rule(field="useragent", operator="Содержит", text=""):
@@ -89,7 +155,19 @@ def normalise_state(raw, defaults, fields, operators, recover=False):
     if not isinstance(version, int) or version > SCHEMA_VERSION:
         warnings.append("версия файла настроек новее поддерживаемой")
 
-    for key in ("endpoint", "bucket", "prefix", "profile", "folder", "local_path", "output_name"):
+    if "endpoint" in raw:
+        try:
+            result["endpoint"] = normalise_s3_endpoint(raw["endpoint"])
+        except EndpointValidationError as error:
+            # Учётные данные никогда не возвращаем вызывающему коду даже при
+            # строгом импорте: безопасно сбрасываем только endpoint.
+            if error.has_userinfo or recover:
+                result["endpoint"] = defaults["endpoint"]
+                warnings.append(str(error))
+            else:
+                raise
+
+    for key in ("bucket", "prefix", "profile", "folder", "local_path", "output_name"):
         if key not in raw:
             continue
         if isinstance(raw[key], str):
@@ -201,6 +279,9 @@ def load_state(path, defaults, fields, operators):
 def save_state(path, state):
     """Атомарно записать JSON и удалить временный файл при любой ошибке."""
     path = Path(path)
+    safe_state = deepcopy(state)
+    if "endpoint" in safe_state:
+        safe_state["endpoint"] = normalise_s3_endpoint(safe_state["endpoint"])
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:
@@ -209,7 +290,7 @@ def save_state(path, state):
             prefix=path.name + ".", suffix=".part", delete=False,
         ) as outgoing:
             temporary = Path(outgoing.name)
-            json.dump(state, outgoing, ensure_ascii=False, indent=2)
+            json.dump(safe_state, outgoing, ensure_ascii=False, indent=2)
             outgoing.write("\n")
             outgoing.flush()
             os.fsync(outgoing.fileno())
