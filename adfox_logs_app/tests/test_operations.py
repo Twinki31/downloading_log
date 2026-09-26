@@ -56,7 +56,7 @@ class OperationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "В логе отсутствуют поля"):
             process_s3_log(
                 self.archive, self.destination, self.rules, False,
-                download_invalid_archive,
+                download_invalid_archive, replace=True,
             )
         self.assertTrue(self.archive.exists())
         self.assertEqual(self.destination.read_text(encoding="utf-8"), "old result")
@@ -71,7 +71,7 @@ class OperationTests(unittest.TestCase):
         self.archive.write_bytes(b"previous archive")
         result, removed, existed_before = process_s3_log(
             self.archive, self.destination, self.rules, False,
-            self.download_valid_archive,
+            self.download_valid_archive, replace=True,
         )
         self.assertEqual(result["matched"], 1)
         self.assertTrue(self.archive.exists())
@@ -95,7 +95,7 @@ class OperationTests(unittest.TestCase):
         unrelated = self.root / "unrelated.part"
         unrelated.write_bytes(b"keep")
 
-        def cancelled_filter(*_args):
+        def cancelled_filter(*_args, **_kwargs):
             self.destination.with_suffix(".part").write_bytes(b"simulated")
             self.destination.with_suffix(".part").unlink()
             raise OperationCancelled("stop")
@@ -111,7 +111,7 @@ class OperationTests(unittest.TestCase):
     def test_cancel_filtering_never_removes_preexisting_archive(self):
         self.archive.write_bytes(b"previous archive")
 
-        def cancelled_filter(*_args):
+        def cancelled_filter(*_args, **_kwargs):
             raise OperationCancelled("stop")
 
         with self.assertRaises(OperationCancelled):
@@ -188,10 +188,10 @@ class OperationTests(unittest.TestCase):
             return process_s3_log(
                 self.archive, self.destination, self.rules, False,
                 lambda: staged, checkpoint=state.check_cancelled,
-                finalize=state.finalize,
+                finalize=state.finalize, replace=True,
             )
 
-        with patch("filtering.os.replace", side_effect=replace_result_and_cancel):
+        with patch("path_ownership.os.replace", side_effect=replace_result_and_cancel):
             self.assertTrue(controller.start(operation))
             controller.wait(1)
 
@@ -219,15 +219,58 @@ class OperationTests(unittest.TestCase):
             return process_s3_log(
                 self.archive, self.destination, self.rules, True,
                 lambda: staged, checkpoint=state.check_cancelled,
-                finalize=state.finalize,
+                finalize=state.finalize, replace=True,
             )
 
-        with patch("operations.os.replace", side_effect=replace_archive_and_cancel):
+        with patch("path_ownership.os.replace", side_effect=replace_archive_and_cancel):
             self.assertTrue(controller.start(operation))
             controller.wait(1)
 
         self.assertEqual(cancel_results, [False, False])
         self.assertEqual(controller.snapshot().status, "completed")
+        with gzip.open(self.archive, "rt", encoding="utf-8") as incoming:
+            self.assertEqual(incoming.read(), "banner_id\n208684\n")
+        self.assertFalse(staged.exists())
+
+    def test_archive_publish_error_preserves_old_result(self):
+        self.archive.write_bytes(b"old archive")
+        self.destination.write_text("old result", encoding="utf-8")
+        staged = self.root / "download.part"
+        with gzip.open(staged, "wt", encoding="utf-8") as output:
+            output.write("banner_id\n208684\n")
+
+        with patch("path_ownership.os.replace", side_effect=OSError("disk error")):
+            with self.assertRaisesRegex(OSError, "disk error"):
+                process_s3_log(
+                    self.archive, self.destination, self.rules, True,
+                    lambda: staged, replace=True,
+                )
+
+        self.assertEqual(self.destination.read_text(encoding="utf-8"), "old result")
+        self.assertEqual(self.archive.read_bytes(), b"old archive")
+        self.assertFalse(staged.exists())
+
+    def test_result_publish_error_after_archive_keeps_old_result(self):
+        self.archive.write_bytes(b"old archive")
+        self.destination.write_text("old result", encoding="utf-8")
+        staged = self.root / "download.part"
+        with gzip.open(staged, "wt", encoding="utf-8") as output:
+            output.write("banner_id\n208684\n")
+        real_replace = os.replace
+
+        def fail_only_result(source, destination):
+            if Path(destination) == self.destination:
+                raise OSError("result disk error")
+            real_replace(source, destination)
+
+        with patch("path_ownership.os.replace", side_effect=fail_only_result):
+            with self.assertRaisesRegex(OSError, "result disk error"):
+                process_s3_log(
+                    self.archive, self.destination, self.rules, True,
+                    lambda: staged, replace=True,
+                )
+
+        self.assertEqual(self.destination.read_text(encoding="utf-8"), "old result")
         with gzip.open(self.archive, "rt", encoding="utf-8") as incoming:
             self.assertEqual(incoming.read(), "banner_id\n208684\n")
         self.assertFalse(staged.exists())

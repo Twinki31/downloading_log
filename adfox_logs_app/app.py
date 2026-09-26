@@ -194,14 +194,14 @@ if st.button(
                 run_s3_operation, selected_date=selected_date, hour=int(hour), folder=folder,
                 endpoint=endpoint, bucket=bucket, prefix=prefix, profile=profile,
                 proxy=proxy, archive=archive, destination=destination,
-                rules=tuple(rules), keep_raw=keep_raw,
+                rules=tuple(rules), keep_raw=keep_raw, replace=replace,
             )
         else:
             if not local_path.strip(): raise ValueError("Укажите путь к логу")
             source = Path(local_path).expanduser()
             operation = partial(
                 run_local_operation, source=source, destination=destination,
-                rules=tuple(rules),
+                rules=tuple(rules), replace=replace,
             )
         st.session_state.operation_archive = str(archive.resolve()) if archive else None
         if controller.start(operation):

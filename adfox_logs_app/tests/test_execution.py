@@ -33,7 +33,7 @@ class ExecutionTests(unittest.TestCase):
                 endpoint="https://s3.example", bucket="bucket", prefix="prefix",
                 profile="", proxy=False, archive=archive, destination=destination,
                 rules=(Rule("banner_id", "Одно из значений", ("208684",)),),
-                keep_raw=True, downloader=downloader,
+                keep_raw=True, replace=False, downloader=downloader,
             )
             state.complete(payload)
 
@@ -81,7 +81,7 @@ class ExecutionTests(unittest.TestCase):
                     prefix="prefix", profile="", proxy=False, archive=archive,
                     destination=destination,
                     rules=(Rule("banner_id", "Одно из значений", ("208684",)),),
-                    keep_raw=True, downloader=downloader,
+                    keep_raw=True, replace=False, downloader=downloader,
                 )
 
             self.assertFalse(staged.exists())

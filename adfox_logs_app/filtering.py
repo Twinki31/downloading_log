@@ -2,8 +2,9 @@
 from dataclasses import dataclass
 from pathlib import Path
 import gzip
-import os
 import tempfile
+
+from path_ownership import publish_file
 
 OPERATORS = ("Одно из значений", "Не входит в список", "Содержит", "Не содержит", "Пусто", "Не пусто")
 
@@ -23,7 +24,7 @@ class Rule:
         raise ValueError("Неизвестное условие")
 
 def filter_log(source, destination, rules, progress=None, checkpoint=None,
-               finalize=None):
+               finalize=None, replace=False):
     source, destination = Path(source).expanduser(), Path(destination).expanduser()
     if source.resolve() == destination.resolve():
         raise ValueError("Исходный и итоговый файлы должны различаться")
@@ -74,7 +75,7 @@ def filter_log(source, destination, rules, progress=None, checkpoint=None,
                         progress(checked, matched)
                 if checkpoint:
                     checkpoint()
-            publish = lambda: os.replace(temporary, destination)
+            publish = lambda: publish_file(temporary, destination, replace=replace)
             if finalize:
                 finalize(publish)
             else:

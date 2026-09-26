@@ -67,11 +67,12 @@ class Tests(unittest.TestCase):
     def test_replace_error_preserves_old_result_and_removes_temporary(self):
         self.write('banner_id\n208684\n')
         self.target.write_text('old result', encoding='utf-8')
-        with patch('filtering.os.replace', side_effect=OSError('disk error')):
+        with patch('path_ownership.os.replace', side_effect=OSError('disk error')):
             with self.assertRaisesRegex(OSError, 'disk error'):
                 filter_log(
                     self.source, self.target,
                     [Rule('banner_id', 'Одно из значений', ('208684',))],
+                    replace=True,
                 )
         self.assertEqual(self.target.read_text(encoding='utf-8'), 'old result')
         self.assertFalse(list(self.root.glob('*.part')))
@@ -94,9 +95,10 @@ class Tests(unittest.TestCase):
                 [Rule('banner_id', 'Одно из значений', ('208684',))],
                 checkpoint=state.check_cancelled,
                 finalize=state.finalize,
+                replace=True,
             )
 
-        with patch('filtering.os.replace', side_effect=replace_and_cancel):
+        with patch('path_ownership.os.replace', side_effect=replace_and_cancel):
             self.assertTrue(controller.start(operation))
             controller.wait(1)
 

@@ -1,14 +1,15 @@
 """Оркестрация скачивания, фильтрации и очистки исходного архива."""
 
-import os
 from pathlib import Path
 
 from filtering import filter_log
 from operation_state import OperationCancelled
+from path_ownership import publish_file
 
 
 def process_s3_log(archive, destination, rules, keep_raw, download, progress=None,
-                   checkpoint=None, finalize=None, filterer=filter_log):
+                   checkpoint=None, finalize=None, filterer=filter_log,
+                   replace=False):
     """Скачать и отфильтровать лог, затем при необходимости удалить новый архив.
 
     Архив, существовавший до начала операции, функция никогда не удаляет. Любая
@@ -33,13 +34,18 @@ def process_s3_log(archive, destination, rules, keep_raw, download, progress=Non
 
         def commit_result(publish_result):
             def commit_all():
-                publish_result()
                 if source_is_archive:
+                    publish_result()
                     if removed:
                         source.unlink()
                 elif keep_raw:
-                    os.replace(source, archive)
+                    # Архив публикуем первым: если этот шаг не удастся, старый
+                    # итоговый TSV ещё не затронут. Итоговый TSV всегда
+                    # остаётся последней публикацией успешной операции.
+                    publish_file(source, archive, replace=replace)
+                    publish_result()
                 else:
+                    publish_result()
                     source.unlink()
 
             if finalize:
@@ -49,12 +55,13 @@ def process_s3_log(archive, destination, rules, keep_raw, download, progress=Non
 
         result = filterer(
             source, destination, rules, progress, checkpoint, commit_result,
+            replace=replace,
         )
         source = None
         return result, removed, existed_before
     except OperationCancelled:
         # Удаляем только архив/part, созданный именно этой операцией.
-        if source is not None and staged_source:
+        if source is not None and staged_source and source.exists():
             source.unlink(missing_ok=True)
         elif not existed_before:
             archive.unlink(missing_ok=True)
@@ -64,13 +71,19 @@ def process_s3_log(archive, destination, rules, keep_raw, download, progress=Non
         # при ошибке не заменяем подготовленной копией.
         if source is not None and staged_source:
             if not existed_before:
-                os.replace(source, archive)
+                try:
+                    publish_file(source, archive, replace=replace)
+                finally:
+                    source.unlink(missing_ok=True)
             else:
                 source.unlink(missing_ok=True)
         raise
 
 
 def process_local_log(source, destination, rules, progress=None, checkpoint=None,
-                      finalize=None, filterer=filter_log):
+                      finalize=None, filterer=filter_log, replace=False):
     """Отфильтровать локальный файл, не изменяя и не удаляя источник."""
-    return filterer(source, destination, rules, progress, checkpoint, finalize)
+    return filterer(
+        source, destination, rules, progress, checkpoint, finalize,
+        replace=replace,
+    )

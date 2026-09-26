@@ -4,6 +4,8 @@ from pathlib import Path
 import os
 import tempfile
 
+from path_ownership import publish_file
+
 
 DEFAULT_CHUNK_SIZE = 8 * 1024 * 1024
 
@@ -25,7 +27,7 @@ def _object_identity(client, bucket, key):
 
 def download_log(date, hour, folder, endpoint, bucket, prefix, profile="", use_proxy=False,
                  progress=None, metadata=None, control=None,
-                 chunk_size=DEFAULT_CHUNK_SIZE, publish=True):
+                 chunk_size=DEFAULT_CHUNK_SIZE, publish=True, replace=False):
     """Скачать объект отдельными Range GET, безопасно прерываясь между порциями."""
     import boto3
     from botocore.config import Config
@@ -99,9 +101,11 @@ def download_log(date, hour, folder, endpoint, bucket, prefix, profile="", use_p
                     progress(len(data))
         if publish:
             if control:
-                control.finalize(lambda: os.replace(temporary, destination))
+                control.finalize(
+                    lambda: publish_file(temporary, destination, replace=replace)
+                )
             else:
-                os.replace(temporary, destination)
+                publish_file(temporary, destination, replace=replace)
             result = destination
         else:
             # Ownership of the completed staging file passes to the caller.

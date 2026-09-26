@@ -224,13 +224,43 @@ class DownloadTests(unittest.TestCase):
             archive.write_bytes(b"previous archive")
             client = RangeClient(b"new archive")
 
-            with patch("download.os.replace", side_effect=OSError("disk error")):
+            with patch("path_ownership.os.replace", side_effect=OSError("disk error")):
                 with self.assertRaisesRegex(OSError, "disk error"):
-                    self.run_download(root, client)
+                    self.run_download(root, client, replace=True)
 
             self.assertEqual(archive.read_bytes(), b"previous archive")
             self.assertFalse(list(root.glob("*.part")))
             self.assertTrue(client.closed)
+
+    def test_archive_appearing_during_download_is_not_replaced_without_permission(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive = root / "2026_09_24_12.tsv.gz"
+            client = RangeClient(b"new archive")
+
+            def competing_publish(_total):
+                archive.write_bytes(b"competing archive")
+
+            with self.assertRaisesRegex(FileExistsError, "замена не разрешена"):
+                self.run_download(
+                    root, client, metadata=competing_publish, replace=False,
+                )
+
+            self.assertEqual(archive.read_bytes(), b"competing archive")
+            self.assertFalse(list(root.glob("*.part")))
+
+    def test_replace_true_allows_existing_archive_replacement(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive = root / "2026_09_24_12.tsv.gz"
+            archive.write_bytes(b"old archive")
+
+            result = self.run_download(
+                root, RangeClient(b"new archive"), replace=True,
+            )
+
+            self.assertEqual(result, archive)
+            self.assertEqual(archive.read_bytes(), b"new archive")
 
 
 if __name__ == "__main__":
