@@ -28,7 +28,12 @@ def _object_identity(client, bucket, key):
 def download_log(date, hour, folder, endpoint, bucket, prefix, profile="", use_proxy=False,
                  progress=None, metadata=None, control=None,
                  chunk_size=DEFAULT_CHUNK_SIZE, publish=True, replace=False):
-    """Скачать объект отдельными Range GET, безопасно прерываясь между порциями."""
+    """Скачать объект отдельными Range GET, безопасно прерываясь между порциями.
+
+    При ``publish=False`` владение готовым staging-файлом передаётся вызывающему
+    коду только после успешного закрытия S3-клиента. До успешного возврата файл
+    принадлежит этой функции и удаляется при любой ошибке.
+    """
     import boto3
     from botocore.config import Config
 
@@ -47,6 +52,7 @@ def download_log(date, hour, folder, endpoint, bucket, prefix, profile="", use_p
     client = session.client("s3", endpoint_url=endpoint, config=config)
     temporary = None
     primary_error = None
+    transfer_temporary = False
     try:
         fd, temporary_name = tempfile.mkstemp(dir=folder, suffix=".part")
         temporary = Path(temporary_name)
@@ -110,23 +116,27 @@ def download_log(date, hour, folder, endpoint, bucket, prefix, profile="", use_p
                 publish_file(temporary, destination, replace=replace)
             result = destination
         else:
-            # Ownership of the completed staging file passes to the caller.
+            # Ownership passes only after every mandatory cleanup action has
+            # succeeded and the function can actually return this path.
             result = temporary
-            temporary = None
+            transfer_temporary = True
     except BaseException as error:
         primary_error = error
         raise
     finally:
         cleanup_errors = []
-        if temporary is not None:
-            try:
-                temporary.unlink(missing_ok=True)
-            except BaseException as error:
-                cleanup_errors.append(("удалить временный файл", error))
         try:
             client.close()
         except BaseException as error:
             cleanup_errors.append(("закрыть S3-клиент", error))
+        if temporary is not None and (not transfer_temporary or cleanup_errors):
+            try:
+                temporary.unlink(missing_ok=True)
+            except BaseException as error:
+                cleanup_errors.append(("удалить временный файл", error))
+
+        if transfer_temporary and not cleanup_errors:
+            temporary = None
 
         if cleanup_errors:
             if primary_error is not None:

@@ -258,6 +258,78 @@ class DownloadTests(unittest.TestCase):
                 ["Дополнительно не удалось закрыть S3-клиент: OSError"],
             )
 
+    def test_unpublished_staging_is_removed_when_client_close_fails(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            unrelated = root / "unrelated.part"
+            unrelated.write_bytes(b"keep")
+            client = RangeClient(b"new archive")
+            close_error = OSError("close failed")
+            client.close_error = close_error
+
+            with self.assertRaises(OSError) as raised:
+                self.run_download(root, client, publish=False)
+
+            self.assertIs(raised.exception, close_error)
+            self.assertEqual(client.close_calls, 1)
+            self.assertEqual(list(root.glob("*.part")), [unrelated])
+            self.assertEqual(unrelated.read_bytes(), b"keep")
+
+    def test_unpublished_staging_is_returned_after_successful_client_close(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            unrelated = root / "unrelated.part"
+            unrelated.write_bytes(b"keep")
+            client = RangeClient(b"new archive")
+
+            staging = self.run_download(root, client, publish=False)
+
+            self.assertEqual(client.close_calls, 1)
+            self.assertTrue(staging.exists())
+            self.assertEqual(staging.read_bytes(), b"new archive")
+            self.assertEqual(unrelated.read_bytes(), b"keep")
+            staging.unlink()
+            self.assertEqual(list(root.glob("*.part")), [unrelated])
+
+    def test_download_error_survives_client_close_error_and_removes_own_part(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            unrelated = root / "unrelated.part"
+            unrelated.write_bytes(b"keep")
+            client = RangeClient(b"new archive")
+            download_error = OSError("network failed")
+            client.fail_get = download_error
+            client.close_error = OSError("close failed with secret details")
+
+            with self.assertRaises(OSError) as raised:
+                self.run_download(root, client, publish=False)
+
+            self.assertIs(raised.exception, download_error)
+            self.assertEqual(
+                raised.exception.__notes__,
+                ["Дополнительно не удалось закрыть S3-клиент: OSError"],
+            )
+            self.assertEqual(list(root.glob("*.part")), [unrelated])
+            self.assertEqual(unrelated.read_bytes(), b"keep")
+
+    def test_published_archive_survives_client_close_error(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive = root / "2026_09_24_12.tsv.gz"
+            unrelated = root / "unrelated.part"
+            unrelated.write_bytes(b"keep")
+            client = RangeClient(b"new archive")
+            close_error = OSError("close failed")
+            client.close_error = close_error
+
+            with self.assertRaises(OSError) as raised:
+                self.run_download(root, client, publish=True)
+
+            self.assertIs(raised.exception, close_error)
+            self.assertEqual(archive.read_bytes(), b"new archive")
+            self.assertEqual(list(root.glob("*.part")), [unrelated])
+            self.assertEqual(unrelated.read_bytes(), b"keep")
+
     def test_replace_error_preserves_old_archive_and_removes_temporary(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
