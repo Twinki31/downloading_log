@@ -60,11 +60,24 @@ class OperationStateTests(unittest.TestCase):
         self.state.begin_filtering()
         self.assertEqual(self.state.snapshot().speed_bytes_per_second, 2000.0)
 
-    def test_pause_time_is_excluded_from_speed(self):
-        self.state.begin_download(200)
+    def test_speed_before_during_and_after_actual_pause(self):
+        self.state.begin_download(400)
         self.clock.value = 1.0
         self.state.add_downloaded(100)
+        self.assertEqual(self.state.snapshot().speed_bytes_per_second, 100.0)
+
         self.assertTrue(self.state.request_pause())
+        pausing = self.state.snapshot()
+        self.assertEqual(pausing.status, "pausing")
+        self.assertEqual(pausing.speed_bytes_per_second, 100.0)
+
+        # Текущая Range-порция ещё дочитывается после запроса паузы.
+        self.clock.value = 2.0
+        self.state.add_downloaded(200)
+        pausing = self.state.snapshot()
+        self.assertEqual(pausing.status, "pausing")
+        self.assertEqual(pausing.downloaded_bytes, 300)
+        self.assertEqual(pausing.speed_bytes_per_second, 200.0)
 
         waiting = threading.Thread(target=self.state.wait_download_permission)
         waiting.start()
@@ -74,12 +87,23 @@ class OperationStateTests(unittest.TestCase):
             time.sleep(0.001)
         self.assertEqual(self.state.snapshot().status, "paused")
         paused_bytes = self.state.snapshot().downloaded_bytes
-        self.clock.value = 101.0
-        self.assertTrue(self.state.resume())
-        waiting.join(1)
+        self.assertEqual(self.state.snapshot().speed_bytes_per_second, 0.0)
 
         self.clock.value = 102.0
+        self.assertTrue(self.state.resume())
+        waiting.join(1)
+        resumed = self.state.snapshot()
+        self.assertEqual(resumed.status, "downloading")
+        self.assertEqual(resumed.downloaded_bytes, paused_bytes)
+        self.assertEqual(resumed.speed_bytes_per_second, 0.0)
+
+        self.clock.value = 103.0
         self.state.add_downloaded(100)
+        self.assertEqual(self.state.snapshot().speed_bytes_per_second, 100.0)
+
+        # Активное ожидание завершения порции (1..2) входит в среднюю,
+        # а только фактическая пауза (2..102) исключается.
+        self.clock.value = 104.0
         self.state.begin_filtering()
         self.assertEqual(self.state.snapshot().downloaded_bytes, paused_bytes + 100)
         self.assertEqual(self.state.snapshot().speed_bytes_per_second, 100.0)

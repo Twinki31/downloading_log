@@ -177,6 +177,9 @@ class OperationState:
             self._pause_requested = False
             self._sample_at = now
             self._sample_bytes = self._snapshot.downloaded_bytes
+            self._snapshot = replace(
+                self._snapshot, speed_bytes_per_second=0.0,
+            )
             self._transition("downloading")
             self._condition.notify_all()
             return True
@@ -191,6 +194,9 @@ class OperationState:
                     paused = True
                     self._pause_started_at = self._clock()
                     self._transition("paused")
+                    self._snapshot = replace(
+                        self._snapshot, speed_bytes_per_second=0.0,
+                    )
                 self._condition.wait()
                 self._raise_if_cancelled()
             return paused

@@ -11,6 +11,8 @@ from unittest.mock import patch
 import streamlit as st
 from streamlit.testing.v1 import AppTest
 
+from operation_state import OperationController, OperationState
+
 
 APP = Path(__file__).parents[1] / "app.py"
 
@@ -381,6 +383,40 @@ class AppUiTests(unittest.TestCase):
         self.assertTrue(any("операция отменена" in item.value for item in app.info))
         self.assertEqual(marker.read_text(encoding="utf-8"), "keep")
         self.assertFalse(app.text_input(key="folder").disabled)
+
+    def test_paused_download_shows_zero_current_speed(self):
+        class Clock:
+            value = 0.0
+
+            def __call__(self):
+                return self.value
+
+        clock = Clock()
+        state = OperationState(clock=clock, speed_interval=0.5)
+        self.assertTrue(state.prepare())
+        state.begin_download(200)
+        clock.value = 1.0
+        state.add_downloaded(50)
+        self.assertEqual(state.snapshot().speed_bytes_per_second, 50.0)
+        self.assertTrue(state.request_pause())
+
+        waiting = threading.Thread(target=state.wait_download_permission)
+        waiting.start()
+        for _ in range(100):
+            if state.snapshot().status == "paused":
+                break
+            time.sleep(0.001)
+        self.assertEqual(state.snapshot().status, "paused")
+
+        app = self.open_app()
+        app.session_state["operation_controller"] = OperationController(state)
+        app.run()
+        captions = [item.value for item in app.caption]
+        self.assertIn("Текущая скорость: 0 Б/с", captions)
+
+        self.assertTrue(state.resume())
+        waiting.join(1)
+        self.assertFalse(waiting.is_alive())
 
     def test_filtering_has_cancel_but_no_pause_button(self):
         app = self.open_app()

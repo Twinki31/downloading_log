@@ -302,7 +302,15 @@ def render_operation():
                 text=(f"Получено {format_bytes(snapshot.downloaded_bytes)} из "
                       f"{format_bytes(snapshot.total_bytes)} · {snapshot.percent:.1f}%"),
             )
-        st.caption(f"Текущая скорость: {format_speed(snapshot.speed_bytes_per_second)}")
+        if snapshot.status == "paused":
+            st.caption("Текущая скорость: 0 Б/с")
+        elif snapshot.status == "pausing":
+            st.caption(
+                f"Последняя измеренная скорость: "
+                f"{format_speed(snapshot.speed_bytes_per_second)}"
+            )
+        else:
+            st.caption(f"Текущая скорость: {format_speed(snapshot.speed_bytes_per_second)}")
     elif snapshot.status == "filtering":
         st.info("Состояние: фильтрация")
         if snapshot.total_bytes is not None:
