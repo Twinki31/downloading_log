@@ -50,6 +50,11 @@ class ReleaseConfigurationTests(unittest.TestCase):
         self.assertIn('Name: "{autodesktop}\\{#MyAppName}"', installer)
         self.assertNotIn("*.py", installer)
 
+    def test_windows_build_reads_validated_version_without_shell_execution(self):
+        build_script = (APP_DIR / "build_windows.bat").read_text(encoding="utf-8")
+        self.assertIn('set /p "APP_VERSION="<VERSION', build_script)
+        self.assertNotIn("from app_version import APP_VERSION", build_script)
+
     def test_readme_has_one_latest_release_link(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertEqual(readme.count("/releases/latest"), 1)

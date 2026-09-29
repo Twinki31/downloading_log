@@ -3,6 +3,7 @@ setlocal
 cd /d "%~dp0"
 
 echo Сборка AdFox Logs для Windows...
+if not exist ".venv-build\Scripts\python.exe" python -m venv .venv-build
 if not exist ".venv-build\Scripts\python.exe" py -3 -m venv .venv-build
 if errorlevel 1 goto :failed
 
@@ -12,7 +13,7 @@ if errorlevel 1 goto :failed
 if errorlevel 1 goto :failed
 
 set "APP_VERSION="
-for /f "usebackq delims=" %%V in (`".venv-build\Scripts\python.exe" -c "from app_version import APP_VERSION; print(APP_VERSION)"`) do set "APP_VERSION=%%V"
+set /p "APP_VERSION="<VERSION
 if not defined APP_VERSION goto :failed
 
 set "ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
