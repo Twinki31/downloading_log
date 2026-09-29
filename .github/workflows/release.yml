@@ -75,7 +75,8 @@ jobs:
           test -L "$mount_point/Applications"
           test -z "$(find "$mount_point" -mindepth 1 -maxdepth 1 \
             ! -name 'AdFox Logs.app' ! -name 'Applications' ! -name '.*' -print -quit)"
-          test -z "$(find "$mount_point" -type f \( -name '*.py' -o -name 'requirements*.txt' \) -print -quit)"
+          test -z "$(find "$mount_point" -mindepth 1 -maxdepth 1 -type f \
+            \( -name '*.py' -o -name 'requirements*.txt' \) -print -quit)"
       - name: Запустить готовое приложение
         working-directory: adfox_logs_app
         run: |

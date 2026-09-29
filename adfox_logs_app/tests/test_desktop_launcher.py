@@ -24,6 +24,7 @@ class DesktopLauncherTests(unittest.TestCase):
         self.assertIn("--server.address=127.0.0.1", arguments)
         self.assertIn("--server.port=8501", arguments)
         self.assertIn("--server.headless=false", arguments)
+        self.assertIn("--server.showEmailPrompt=false", arguments)
         self.assertIn("--logger.hideWelcomeMessage=true", arguments)
         self.assertNotIn("0.0.0.0", arguments)
 

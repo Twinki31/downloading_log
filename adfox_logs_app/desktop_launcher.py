@@ -24,6 +24,7 @@ def streamlit_arguments(app_path):
         "--server.address=127.0.0.1",
         "--server.port=8501",
         "--server.headless=false",
+        "--server.showEmailPrompt=false",
         "--server.maxUploadSize=1",
         "--browser.gatherUsageStats=false",
         "--client.showSidebarNavigation=false",
