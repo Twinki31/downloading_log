@@ -1,0 +1,196 @@
+name: Сборка приложения
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.13"
+
+jobs:
+  tests:
+    name: Автоматические тесты
+    runs-on: ubuntu-latest
+    steps:
+      - name: Получить исходный код
+        uses: actions/checkout@v5
+      - name: Установить Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            adfox_logs_app/requirements.txt
+            adfox_logs_app/requirements-build.txt
+      - name: Установить зависимости
+        working-directory: adfox_logs_app
+        run: python -m pip install -r requirements-build.txt
+      - name: Проверить тег и версию
+        if: startsWith(github.ref, 'refs/tags/')
+        working-directory: adfox_logs_app
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python -c "import os; from app_version import require_release_tag; require_release_tag(os.environ['RELEASE_TAG'])"
+      - name: Запустить тесты без доступа к S3
+        working-directory: adfox_logs_app
+        env:
+          AWS_EC2_METADATA_DISABLED: "true"
+        run: python -m unittest discover -s tests -v
+
+  build-macos:
+    name: macOS Intel — DMG
+    needs: tests
+    runs-on: macos-15-intel
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+    steps:
+      - name: Получить исходный код
+        uses: actions/checkout@v5
+      - name: Установить Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            adfox_logs_app/requirements.txt
+            adfox_logs_app/requirements-build.txt
+      - name: Собрать приложение и DMG
+        working-directory: adfox_logs_app
+        run: |
+          chmod +x build_macos.command create_dmg.sh
+          ./build_macos.command
+      - name: Проверить содержимое DMG
+        working-directory: adfox_logs_app
+        run: |
+          mount_point="$(mktemp -d)"
+          hdiutil attach "dist/AdFox-Logs-macOS.dmg" -readonly -nobrowse -mountpoint "$mount_point"
+          trap 'hdiutil detach "$mount_point"' EXIT
+          test -d "$mount_point/AdFox Logs.app"
+          test -L "$mount_point/Applications"
+          test "$(find "$mount_point" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" = "2"
+          test -z "$(find "$mount_point" -type f \( -name '*.py' -o -name 'requirements*.txt' \) -print -quit)"
+      - name: Запустить готовое приложение
+        working-directory: adfox_logs_app
+        run: |
+          open -n "dist/AdFox Logs.app"
+          for attempt in {1..120}; do
+            if curl --fail --silent http://127.0.0.1:8501/_stcore/health | grep -qx ok; then
+              break
+            fi
+            sleep 0.5
+          done
+          curl --fail --silent http://127.0.0.1:8501/_stcore/health | grep -qx ok
+          lsof -nP -iTCP:8501 -sTCP:LISTEN | grep -F '127.0.0.1:8501'
+          pkill -f '/AdFox Logs.app/Contents/MacOS/AdFox Logs'
+      - name: Сохранить тестовый artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AdFox-Logs-macOS
+          path: adfox_logs_app/dist/AdFox-Logs-macOS.dmg
+          if-no-files-found: error
+          retention-days: 14
+
+  build-windows:
+    name: Windows x64 — Setup EXE
+    needs: tests
+    runs-on: windows-2025
+    steps:
+      - name: Получить исходный код
+        uses: actions/checkout@v5
+      - name: Установить Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            adfox_logs_app/requirements.txt
+            adfox_logs_app/requirements-build.txt
+      - name: Собрать приложение и установщик
+        working-directory: adfox_logs_app
+        shell: cmd
+        run: build_windows.bat
+      - name: Установить и запустить готовое приложение
+        working-directory: adfox_logs_app
+        shell: pwsh
+        run: |
+          $installDir = Join-Path $env:RUNNER_TEMP "AdFox Logs"
+          $installer = Resolve-Path "dist\AdFox-Logs-Windows-Setup.exe"
+          $arguments = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR=`"$installDir`""
+          $install = Start-Process -FilePath $installer -ArgumentList $arguments -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "Installer exit code: $($install.ExitCode)" }
+
+          $exe = Join-Path $installDir "AdFox Logs.exe"
+          if (-not (Test-Path $exe)) { throw "Installed application was not found" }
+          if (Get-ChildItem $installDir -Recurse -File -Include *.py,requirements*.txt) {
+            throw "Source files were found in the installed application"
+          }
+          $desktopShortcut = Join-Path ([Environment]::GetFolderPath("Desktop")) "AdFox Logs.lnk"
+          if (-not (Test-Path $desktopShortcut)) { throw "Desktop shortcut was not created" }
+
+          $app = Start-Process -FilePath $exe -PassThru
+          try {
+            $ready = $false
+            for ($attempt = 0; $attempt -lt 120; $attempt++) {
+              try {
+                $response = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8501/_stcore/health -TimeoutSec 1
+                if ($response.Content.Trim() -eq "ok") { $ready = $true; break }
+              } catch {}
+              Start-Sleep -Milliseconds 500
+            }
+            if (-not $ready) { throw "Application did not start on 127.0.0.1:8501" }
+            $listeners = Get-NetTCPConnection -State Listen -LocalPort 8501
+            if ($listeners.LocalAddress -contains "0.0.0.0" -or
+                $listeners.LocalAddress -contains "::") {
+              throw "Application is listening outside localhost"
+            }
+            if ($listeners.LocalAddress -notcontains "127.0.0.1") {
+              throw "127.0.0.1 listener was not found"
+            }
+          } finally {
+            Get-Process -Name "AdFox Logs" -ErrorAction SilentlyContinue |
+              Stop-Process -Force -ErrorAction SilentlyContinue
+          }
+      - name: Сохранить тестовый artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AdFox-Logs-Windows
+          path: adfox_logs_app/dist/AdFox-Logs-Windows-Setup.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Опубликовать GitHub Release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - build-macos
+      - build-windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Получить собранные файлы
+        uses: actions/download-artifact@v5
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Проверить состав релиза
+        run: |
+          test -f release-assets/AdFox-Logs-macOS.dmg
+          test -f release-assets/AdFox-Logs-Windows-Setup.exe
+          test "$(find release-assets -type f | wc -l | tr -d ' ')" = "2"
+      - name: Создать GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            release-assets/AdFox-Logs-macOS.dmg \
+            release-assets/AdFox-Logs-Windows-Setup.exe \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "AdFox Logs ${GITHUB_REF_NAME}" \
+            --generate-notes \
+            --verify-tag

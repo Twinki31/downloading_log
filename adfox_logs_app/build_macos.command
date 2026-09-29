@@ -9,5 +9,6 @@ fi
 
 ".venv-build/bin/python" -m pip install -r requirements-build.txt
 ".venv-build/bin/python" -m PyInstaller --noconfirm --clean adfox_logs.spec
+./create_dmg.sh
 
-echo "Готово: dist/AdFox Logs.app"
+echo "Готово: dist/AdFox-Logs-macOS.dmg"

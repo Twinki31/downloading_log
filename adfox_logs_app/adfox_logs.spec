@@ -6,11 +6,15 @@ import sys
 
 from PyInstaller.utils.hooks import collect_all
 
+from app_version import read_version
+
 
 project_dir = Path(SPECPATH)
+app_version = read_version(project_dir / "VERSION")
 
 datas = [
     (str(project_dir / "app.py"), "."),
+    (str(project_dir / "VERSION"), "."),
     (str(project_dir / "log_headers.tsv"), "."),
     (str(project_dir / "pages" / "1_Описание_полей.py"), "pages"),
 ]
@@ -74,9 +78,15 @@ if sys.platform == "darwin":
         collected,
         name="AdFox Logs.app",
         bundle_identifier="ru.company.adfox-logs",
+        info_plist={
+            "CFBundleDisplayName": "AdFox Logs",
+            "CFBundleShortVersionString": app_version,
+            "CFBundleVersion": app_version,
+            "LSMinimumSystemVersion": "12.0",
+        },
     )
 else:
-    # На Windows один EXE удобнее переносить и размещать на рабочем столе.
+    # Один EXE устанавливается Inno Setup и запускается через созданные ярлыки.
     exe = EXE(
         pyz,
         a.scripts,

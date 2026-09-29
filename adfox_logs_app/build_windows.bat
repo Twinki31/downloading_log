@@ -11,10 +11,23 @@ if errorlevel 1 goto :failed
 ".venv-build\Scripts\python.exe" -m PyInstaller --noconfirm --clean adfox_logs.spec
 if errorlevel 1 goto :failed
 
-echo Готово: dist\AdFox Logs.exe
+set "APP_VERSION="
+for /f "usebackq delims=" %%V in (`".venv-build\Scripts\python.exe" -c "from app_version import APP_VERSION; print(APP_VERSION)"`) do set "APP_VERSION=%%V"
+if not defined APP_VERSION goto :failed
+
+set "ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
+if not exist "%ISCC%" set "ISCC=%ProgramFiles%\Inno Setup 6\ISCC.exe"
+if not exist "%ISCC%" (
+    echo Не найден Inno Setup 6. Установите его и повторите сборку.
+    goto :failed
+)
+"%ISCC%" /DMyAppVersion=%APP_VERSION% windows_installer.iss
+if errorlevel 1 goto :failed
+
+echo Готово: dist\AdFox-Logs-Windows-Setup.exe
 exit /b 0
 
 :failed
 echo Сборка не завершена. Проверьте сообщение выше.
-pause
+if not defined CI pause
 exit /b 1
