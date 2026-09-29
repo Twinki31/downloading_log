@@ -70,9 +70,11 @@ jobs:
           mount_point="$(mktemp -d)"
           hdiutil attach "dist/AdFox-Logs-macOS.dmg" -readonly -nobrowse -mountpoint "$mount_point"
           trap 'hdiutil detach "$mount_point"' EXIT
+          find "$mount_point" -mindepth 1 -maxdepth 1 -print
           test -d "$mount_point/AdFox Logs.app"
           test -L "$mount_point/Applications"
-          test "$(find "$mount_point" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" = "2"
+          test -z "$(find "$mount_point" -mindepth 1 -maxdepth 1 \
+            ! -name 'AdFox Logs.app' ! -name 'Applications' ! -name '.*' -print -quit)"
           test -z "$(find "$mount_point" -type f \( -name '*.py' -o -name 'requirements*.txt' \) -print -quit)"
       - name: Запустить готовое приложение
         working-directory: adfox_logs_app
@@ -132,17 +134,27 @@ jobs:
           $desktopShortcut = Join-Path ([Environment]::GetFolderPath("Desktop")) "AdFox Logs.lnk"
           if (-not (Test-Path $desktopShortcut)) { throw "Desktop shortcut was not created" }
 
-          $app = Start-Process -FilePath $exe -PassThru
+          $stdout = Join-Path $env:RUNNER_TEMP "adfox-logs.stdout.log"
+          $stderr = Join-Path $env:RUNNER_TEMP "adfox-logs.stderr.log"
+          $app = Start-Process -FilePath $exe -PassThru `
+            -RedirectStandardOutput $stdout -RedirectStandardError $stderr
           try {
             $ready = $false
-            for ($attempt = 0; $attempt -lt 120; $attempt++) {
+            for ($attempt = 0; $attempt -lt 300; $attempt++) {
               try {
                 $response = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8501/_stcore/health -TimeoutSec 1
                 if ($response.Content.Trim() -eq "ok") { $ready = $true; break }
               } catch {}
+              if ($app.HasExited) { break }
               Start-Sleep -Milliseconds 500
             }
-            if (-not $ready) { throw "Application did not start on 127.0.0.1:8501" }
+            if (-not $ready) {
+              Write-Host "Process exited: $($app.HasExited)"
+              if ($app.HasExited) { Write-Host "Exit code: $($app.ExitCode)" }
+              if (Test-Path $stdout) { Get-Content $stdout }
+              if (Test-Path $stderr) { Get-Content $stderr }
+              throw "Application did not start on 127.0.0.1:8501"
+            }
             $listeners = Get-NetTCPConnection -State Listen -LocalPort 8501
             if ($listeners.LocalAddress -contains "0.0.0.0" -or
                 $listeners.LocalAddress -contains "::") {

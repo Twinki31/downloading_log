@@ -42,6 +42,7 @@ class ReleaseConfigurationTests(unittest.TestCase):
         self.assertIn("AdFox-Logs-Windows-Setup.exe", workflow)
         self.assertIn("AdFox-Logs-macOS.dmg", workflow)
         self.assertIn('find release-assets -type f', workflow)
+        self.assertIn("! -name 'AdFox Logs.app' ! -name 'Applications' ! -name '.*'", workflow)
 
     def test_windows_installer_creates_shortcuts_from_packaged_exe(self):
         installer = (APP_DIR / "windows_installer.iss").read_text(encoding="utf-8")
