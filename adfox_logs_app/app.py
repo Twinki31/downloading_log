@@ -3,6 +3,10 @@ from datetime import date, datetime
 from functools import partial
 from pathlib import Path
 import json
+import os
+import sys
+import threading
+import time
 import streamlit as st
 from app_state import (EndpointValidationError, MAX_RULES, default_state, load_state,
                        new_rule, normalise_s3_endpoint, normalise_state, remove_rule,
@@ -12,6 +16,7 @@ from filtering import OPERATORS, Rule
 from execution import run_local_operation, run_s3_operation
 from operation_state import OperationController
 from ui_localization import install_streamlit_localization
+from app_version import APP_VERSION
 
 st.set_page_config(page_title="Логи AdFox", page_icon="📄", layout="wide")
 st.title("Логи AdFox")
@@ -26,6 +31,15 @@ if "operation_controller" not in st.session_state:
 controller = st.session_state.operation_controller
 operation_snapshot = controller.snapshot()
 operation_active = operation_snapshot.active
+
+
+def stop_packaged_app():
+    """Дать браузеру показать сообщение и завершить локальный процесс."""
+    def stop_after_response():
+        time.sleep(0.5)
+        os._exit(0)
+
+    threading.Thread(target=stop_after_response, daemon=True).start()
 
 
 def clear_setting_widgets():
@@ -53,6 +67,7 @@ if "settings" not in st.session_state:
 settings = st.session_state.settings
 with st.sidebar:
     st.header("Настройки")
+    st.caption(f"Версия {APP_VERSION}")
     pending_state_warning = st.session_state.pop("state_warning", None)
     if pending_state_warning:
         st.warning(pending_state_warning)
@@ -92,6 +107,11 @@ with st.sidebar:
         proxy = st.checkbox("Использовать proxy из окружения", settings["proxy"], key="proxy")
     st.caption("Используется существующий AWS-профиль. Ключи доступа в настройки приложения не записываются.")
     st.caption(f"Рабочее состояние сохраняется автоматически: {STATE_FILE}")
+    if getattr(sys, "frozen", False):
+        if st.button("Закрыть приложение", disabled=operation_active):
+            st.success("Приложение закрывается. Эту вкладку можно закрыть.")
+            stop_packaged_app()
+            st.stop()
 
 mode_options = ["Скачать из S3", "Локальный файл"]
 mode = st.radio("Источник", mode_options, index=mode_options.index(settings["mode"]), horizontal=True, key="mode")
